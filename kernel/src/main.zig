@@ -1,29 +1,27 @@
-const builtin = @import("builtin");
+const arch = @import("arch.zig");
+const boot_info = @import("boot/info.zig");
+const klog = @import("klog.zig");
 const limine = @import("limine");
+const panic = @import("panic.zig").panic;
 
-pub export var base_revision: limine.BaseRevision linksection(".limine_requests") = .{
-  .revision = 3,
-};
-
-pub export var framebuffer_request: limine.FramebufferRequest linksection(".limine_requests") = .{};
-
+// This is the entrypoint
 export fn _start() callconv(.c) noreturn {
-  if (!base_revision.is_supported()) {
-    hang();
-  }
+    arch.initEarlyDebug();
+    klog.info("zernel: booting");
+    klog.info("serial initialized");
 
-  const response = framebuffer_request.response orelse hang();
-  if (response.framebuffer_count == 0) {
-    hang();
-  }
+    if (!boot_info.base_revision.is_supported()) {
+        panic("unsupported Limine base revision");
+    }
 
-  const framebuffer = response.framebuffers()[0];
-  if (framebuffer.bpp != 32) {
-    hang();
-  }
+    const info = boot_info.load();
+    boot_info.validate(&info);
+    boot_info.logFramebuffer(&info);
+    boot_info.logMemoryMap(&info);
+    boot_info.logAddressInfo(&info);
 
-  paint(framebuffer);
-  hang();
+    paint(info.framebuffer);
+    arch.halt();
 }
 
 fn paint(framebuffer: *limine.Framebuffer) void {
@@ -44,23 +42,5 @@ fn paint(framebuffer: *limine.Framebuffer) void {
       const blue: u32 = 0x40;
       raw_pixels[y * pixels_per_line + x] = (red << 16) | (green << 8) | blue;
     }
-  }
-}
-
-fn hang() noreturn {
-  switch (builtin.cpu.arch) {
-    .x86_64 => {
-      asm volatile ("cli");
-      while (true) {
-        asm volatile ("hlt");
-      }
-    },
-    .aarch64 => {
-      asm volatile ("msr daifset, #0xf");
-      while (true) {
-        asm volatile ("wfi");
-      }
-    },
-  else => @compileError("unsupported kernel architecture"),
   }
 }
