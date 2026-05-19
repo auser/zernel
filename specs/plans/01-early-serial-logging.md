@@ -17,6 +17,23 @@ terminal running QEMU.
 
 This is the first real debugging tool we add to the kernel.
 
+## Why This Comes Next
+
+The next code needs a dependable way to report progress before the framebuffer
+console, allocator, interrupts, or page fault handler exist. A kernel that only
+draws pixels can fail in too many silent ways: a missing Limine response, bad
+address, unsupported framebuffer format, or early panic may all look like a
+black screen.
+
+Serial logging is needed for:
+
+- confirming the CPU reached `_start`;
+- reporting Limine validation failures before graphics code runs;
+- making PMM and VM accounting visible during early boot;
+- printing exception and page fault diagnostics later;
+- giving future object, capability, cell, and route registries a simple debug
+  dump path before richer tools exist.
+
 ## What We Will Build
 
 - Tiny x86_64 port I/O helpers: `inb` and `outb`.
@@ -29,6 +46,8 @@ This is the first real debugging tool we add to the kernel.
 ## What This Assumes
 
 Plan 00 introduced the architecture facade:
+
+Example use inside shared kernel files: `kernel/src/main.zig`, `kernel/src/klog.zig`, `kernel/src/panic.zig`
 
 ```zig
 const arch = @import("arch.zig");
@@ -140,6 +159,77 @@ Everything in this plan runs very early. We should not use heap allocation,
 dynamic formatting, or standard library facilities that assume an operating
 system exists. We will write fixed strings and small helper functions.
 
+## Math Notes
+
+### COM1 Register Offsets
+
+COM1 starts at I/O port `0x3f8`. The serial controller exposes several
+registers by adding small offsets to that base:
+
+```text
+base = 0x3f8
+data register         = base + 0
+interrupt enable      = base + 1
+line control register = base + 3
+line status register  = base + 5
+```
+
+That is why the code writes values such as `com1 + 1`, `com1 + 3`, and
+`com1 + 5`. The `com1` constant is the base address; the offset selects the
+register.
+
+### Baud Divisor
+
+The common PC serial clock is 115200 Hz. To get 38400 baud:
+
+```text
+divisor = 115200 / 38400 = 3
+```
+
+The divisor is split into low and high bytes. For divisor `3`:
+
+```text
+low byte  = 0x03
+high byte = 0x00
+```
+
+That is why initialization writes:
+
+```text
+com1 + 0 = 0x03
+com1 + 1 = 0x00
+```
+
+while divisor latch access is enabled.
+
+### Transmit Ready Bit
+
+The line status register lives at `com1 + 5`. Bit `0x20` means the transmit
+holding register is empty:
+
+```text
+0x20 = 0b0010_0000
+```
+
+The check:
+
+```text
+(status & 0x20) != 0
+```
+
+keeps only that bit. If the result is non-zero, COM1 can accept another byte.
+
+### Newline Conversion
+
+Serial terminals commonly expect carriage return plus newline:
+
+```text
+\n  ->  \r\n
+```
+
+`\r` moves the cursor back to column zero. `\n` moves to the next line. Emitting
+both keeps output readable in more terminals.
+
 ## Step 1: Add x86_64 Port I/O Helpers
 
 Create `kernel/src/arch/x86_64/io.zig`.
@@ -148,6 +238,8 @@ This file is x86_64-only. It wraps the CPU instructions that talk to I/O ports.
 No shared kernel file should import it directly.
 
 Solution:
+
+File: `kernel/src/arch/x86_64/io.zig`
 
 ```zig
 pub fn inb(port: u16) u8 {
@@ -190,6 +282,8 @@ modem control.
 
 Solution:
 
+File: `kernel/src/arch/x86_64/serial.zig`
+
 ```zig
 const io = @import("io.zig");
 
@@ -208,6 +302,8 @@ pub fn init() void {
 
 Then expose serial through the x86_64 architecture module:
 
+File: `kernel/src/arch/x86_64.zig`
+
 ```zig
 pub const io = @import("x86_64/io.zig");
 pub const serial = @import("x86_64/serial.zig");
@@ -219,6 +315,8 @@ pub fn initEarlyDebug() void {
 
 Because Plan 00 gave every architecture the same facade shape, shared startup
 code can call:
+
+File: `kernel/src/main.zig`
 
 ```zig
 const arch = @import("arch.zig");
@@ -250,6 +348,8 @@ Solution:
 
 Add this to `kernel/src/arch/x86_64/serial.zig`:
 
+File: `kernel/src/arch/x86_64/serial.zig`
+
 ```zig
 fn canTransmit() bool {
     return (io.inb(com1 + 5) & 0x20) != 0;
@@ -275,6 +375,8 @@ expect carriage return plus newline.
 
 Then expose writing through `kernel/src/arch/x86_64.zig`:
 
+File: `kernel/src/arch/x86_64.zig`
+
 ```zig
 pub fn writeEarlyDebug(message: []const u8) void {
     serial.writeString(message);
@@ -282,6 +384,8 @@ pub fn writeEarlyDebug(message: []const u8) void {
 ```
 
 Now shared code can print one early line:
+
+File: `kernel/src/main.zig`
 
 ```zig
 export fn _start() callconv(.c) noreturn {
@@ -310,6 +414,8 @@ will get noisy. The rest of the kernel should log through one small API.
 Create `kernel/src/klog.zig`.
 
 Solution:
+
+File: `kernel/src/klog.zig`
 
 ```zig
 const arch = @import("arch.zig");
@@ -340,6 +446,8 @@ Important detail: `klog.zig` imports `arch.zig`, not
 the current x86_64 transport for that behavior.
 
 Update `_start` to use `klog`:
+
+File: `kernel/src/main.zig`
 
 ```zig
 const arch = @import("arch.zig");
@@ -375,6 +483,8 @@ Create `kernel/src/panic.zig`.
 
 Solution:
 
+File: `kernel/src/panic.zig`
+
 ```zig
 const arch = @import("arch.zig");
 const klog = @import("klog.zig");
@@ -387,6 +497,8 @@ pub fn panic(msg: []const u8) noreturn {
 ```
 
 Then use it in `kernel/src/main.zig`:
+
+File: `kernel/src/main.zig`
 
 ```zig
 const panic = @import("panic.zig").panic;
@@ -442,6 +554,8 @@ The Makefile debug target should route the guest serial port to the terminal.
 
 The current shape is:
 
+File: `Makefile`
+
 ```make
 debug-x86_64: $(ISO_X86_64_FILE)
 	qemu-system-x86_64 -M q35 -m 128M -cdrom $(ISO_X86_64_FILE) -boot d \
@@ -456,6 +570,8 @@ What the flags mean:
   events.
 
 Run:
+
+Command:
 
 ```sh
 make debug-x86_64

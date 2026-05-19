@@ -8,6 +8,23 @@ managing memory or changing page tables.
 This turns Limine responses into a small internal boot context that later
 subsystems can use without reaching directly into global Limine request objects.
 
+## Why This Comes Next
+
+The next code needs trustworthy facts about the machine before it can manage
+memory or inspect page tables. Limine already knows where usable RAM is, how the
+kernel was loaded, where the framebuffer lives, and how physical memory is
+direct-mapped. If every subsystem reads raw Limine globals directly, boot
+assumptions spread through the kernel and become hard to validate.
+
+`BootInfo` is needed for:
+
+- initializing the PMM from the firmware memory map;
+- converting physical addresses through the HHDM safely;
+- validating framebuffer assumptions before drawing or text rendering;
+- locating the kernel's physical and virtual base addresses;
+- giving later memory-plane and object metadata code a single source of boot
+  truth.
+
 ## What We Will Build
 
 - Limine requests for memory map, HHDM, kernel address, and stack size if needed.
@@ -22,6 +39,167 @@ subsystems can use without reaching directly into global Limine request objects.
 - Higher-half direct map, usually called HHDM.
 - Physical versus virtual addresses.
 - Why bootloader data should be copied or wrapped before broad kernel use.
+
+## Function Map
+
+The boot-info path has three layers:
+
+```text
+main.zig
+  _start()
+    boot_info.base_revision.is_supported()
+    boot_info.load()
+    boot_info.validate(&info)
+    boot_info.logFramebuffer(&info)
+    boot_info.logMemoryMap(&info)
+    boot_info.logAddressInfo(&info)
+    paint(info.framebuffer)
+
+boot/info.zig
+  exported Limine request globals
+  BootInfo
+  load()
+  validate()
+  logFramebuffer()
+  logMemoryMap()
+  logAddressInfo()
+  physToHhdm()
+  hhdmToPhys()
+
+klog.zig
+  info()
+  err()
+  hex()
+  dec()
+  labelHex()
+  labelDec()
+```
+
+Here is what each function is for:
+
+| Function | File | Purpose |
+| --- | --- | --- |
+| `_start` | `main.zig` | Owns the boot sequence. It initializes logging, checks Limine support, loads boot info, validates it, logs it, and continues into kernel work. |
+| `boot_info.load` | `boot/info.zig` | Converts raw Limine responses into one kernel-owned `BootInfo` value. It panics if required responses are missing. |
+| `boot_info.validate` | `boot/info.zig` | Checks assumptions the rest of the kernel relies on, such as 32-bit framebuffer pixels and a non-empty memory map. |
+| `boot_info.logFramebuffer` | `boot/info.zig` | Prints framebuffer metadata so we can confirm what Limine gave us. |
+| `boot_info.logMemoryMap` | `boot/info.zig` | Prints memory ranges and computes useful totals from usable ranges. |
+| `boot_info.logAddressInfo` | `boot/info.zig` | Prints HHDM and kernel physical/virtual base addresses. |
+| `boot_info.physToHhdm` | `boot/info.zig` | Converts a physical address into its direct-map virtual address. |
+| `boot_info.hhdmToPhys` | `boot/info.zig` | Converts a direct-map virtual address back into a physical address. |
+| `klog.hex` | `klog.zig` | Writes a number as hexadecimal without heap allocation. Useful for addresses. |
+| `klog.dec` | `klog.zig` | Writes a number as decimal without heap allocation. Useful for sizes and counts. |
+| `klog.labelHex` | `klog.zig` | Writes `label: 0x...`. |
+| `klog.labelDec` | `klog.zig` | Writes `label: ...`. |
+
+The important dependency direction is:
+
+```text
+main.zig -> boot/info.zig -> klog.zig -> arch.zig
+```
+
+`boot/info.zig` may know about Limine. Later memory managers should receive
+`*const BootInfo` or specific values from it rather than reaching back into
+Limine request globals.
+
+## Math Notes
+
+### Memory Ranges
+
+A Limine memory map entry gives:
+
+```text
+base   = first physical address in the range
+length = number of bytes in the range
+end    = base + length
+```
+
+The range covers addresses:
+
+```text
+[base, end)
+```
+
+That means `base` is included and `end` is excluded. This half-open interval is
+common in systems code because its size is exactly `end - base`.
+
+When we compute the highest usable physical address, we compare `end` values:
+
+Expression used in `kernel/src/boot/info.zig` and later PMM code:
+
+```zig
+const end = base + length;
+if (end > highest_usable) highest_usable = end;
+```
+
+### Usable Memory Totals
+
+Only entries with `entry.kind == .usable` should be counted as allocatable
+memory:
+
+Expression used in `kernel/src/boot/info.zig` and later PMM code:
+
+```zig
+if (entry.kind == .usable) {
+    usable_total += length;
+    usable_ranges += 1;
+}
+```
+
+Reserved, framebuffer, kernel/module, and bootloader ranges must not be handed
+out by a future physical memory allocator.
+
+### HHDM Translation
+
+HHDM means higher-half direct map. Limine maps physical memory into a virtual
+address window by adding one fixed offset:
+
+```text
+hhdm_virtual = hhdm_offset + physical
+physical     = hhdm_virtual - hhdm_offset
+```
+
+So the helper functions are just arithmetic:
+
+File: `kernel/src/boot/info.zig`
+
+```zig
+pub fn physToHhdm(info: *const BootInfo, phys: usize) usize {
+    return info.hhdm_offset + phys;
+}
+
+pub fn hhdmToPhys(info: *const BootInfo, virt: usize) usize {
+    return virt - info.hhdm_offset;
+}
+```
+
+These helpers do not create mappings. They only use the mapping Limine already
+created.
+
+### Hex Digits
+
+Hexadecimal uses 4 bits per digit. To print a `usize` as hex, `klog.hex` walks
+from the highest nibble to the lowest nibble:
+
+```text
+nibble = (value >> shift) & 0xf
+```
+
+`0xf` keeps only the low 4 bits after shifting. Values 0 through 9 become
+`'0'` through `'9'`; values 10 through 15 become `'a'` through `'f'`.
+
+### Decimal Digits
+
+Decimal printing works in reverse. Repeatedly taking `value % 10` gives the
+last digit. Repeatedly dividing by 10 removes the last digit:
+
+```text
+digit = value % 10
+value = value / 10
+```
+
+Because that discovers digits from right to left, the helper fills a stack
+buffer backward and then writes the final slice.
 
 ## Step 1: Add Limine Requests
 
@@ -43,6 +221,8 @@ Put the Limine request globals in `kernel/src/boot/info.zig`, next to the
 `BootInfo` type that consumes them. This keeps all Limine boot-info plumbing in
 one boot module while keeping `main.zig` focused on boot flow.
 
+File: `kernel/src/boot/info.zig`
+
 ```zig
 const limine = @import("limine");
 
@@ -60,6 +240,8 @@ Keep the request objects exported and in `.limine_requests`, just like the
 framebuffer request. Limine discovers them by scanning that section.
 
 Then `main.zig` imports `boot/info.zig` instead of owning the request globals:
+
+File: `kernel/src/main.zig`
 
 ```zig
 const boot_info = @import("boot/info.zig");
@@ -97,6 +279,8 @@ Solution:
 
 Create `kernel/src/boot/info.zig`:
 
+File: `kernel/src/boot/info.zig`
+
 ```zig
 const limine = @import("limine");
 
@@ -115,6 +299,8 @@ ownership boundary:
 - `boot/info.zig` owns Limine request globals, the kernel-friendly `BootInfo`
   type, and the `load()` function.
 - `main.zig` owns the boot flow and should just call `boot_info.load()`.
+
+File: `kernel/src/boot/info.zig`
 
 ```zig
 const panic = @import("../panic.zig").panic;
@@ -145,6 +331,8 @@ pub fn load() BootInfo {
 ```
 
 Then `main.zig` uses it:
+
+File: `kernel/src/main.zig`
 
 ```zig
 const boot_info = @import("boot/info.zig");
@@ -188,6 +376,8 @@ Put `logFramebuffer` in `kernel/src/boot/info.zig`, next to `BootInfo` and
 boot-info module. `klog` remains the output mechanism.
 
 First add small integer output helpers to `klog.zig`:
+
+File: `kernel/src/klog.zig`
 
 ```zig
 const arch = @import("arch.zig");
@@ -251,7 +441,24 @@ These helpers still avoid heap allocation. They write digits into small stack
 buffers and send the final slice through `arch.writeEarlyDebug`, keeping `klog`
 architecture-independent.
 
+Why the hex helper shifts by 4:
+
+- One hex digit represents 4 bits.
+- `value >> shift` moves the nibble we want into the low bits.
+- `& 0xf` keeps only that nibble.
+- Leading zero nibbles are skipped until the first non-zero nibble, except that
+  the value `0` still prints as `0x0`.
+
+Why the decimal helper fills the buffer backward:
+
+- `remaining % 10` gives the last decimal digit.
+- `remaining /= 10` removes that last digit.
+- The digits arrive in reverse order, so the buffer is filled from the end
+  toward the front.
+
 Then log the framebuffer from `boot/info.zig`:
+
+File: `kernel/src/boot/info.zig`
 
 ```zig
 const klog = @import("../klog.zig");
@@ -270,6 +477,8 @@ pub fn logFramebuffer(info: *const BootInfo) void {
 
 Then call it from `_start` after `boot_info.load()` and framebuffer validation:
 
+File: `kernel/src/main.zig`
+
 ```zig
 const info = boot_info.load();
 if (info.framebuffer.bpp != 32) {
@@ -281,6 +490,17 @@ boot_info.logFramebuffer(&info);
 
 It is fine to implement `labelDec` and `labelHex` as simple serial-writing
 helpers instead of a full formatter.
+
+Why these framebuffer fields matter:
+
+- `width` and `height` tell us the visible pixel dimensions.
+- `pitch` tells us how many bytes each framebuffer row occupies in memory. It
+  can be larger than `width * bytes_per_pixel` because firmware may pad rows for
+  alignment.
+- `bpp` tells us how many bits each pixel uses. This plan expects 32 bpp because
+  the current paint code writes `u32` pixels.
+- `address` is the virtual address where the kernel can write framebuffer
+  pixels.
 
 Checkpoint:
 
@@ -304,6 +524,8 @@ Solution:
 
 Put `logMemoryMap` in `kernel/src/boot/info.zig`, next to
 `logFramebuffer`. It is another view of boot-provided metadata.
+
+File: `kernel/src/boot/info.zig`
 
 ```zig
 pub fn logMemoryMap(info: *const BootInfo) void {
@@ -339,7 +561,20 @@ The Limine Zig package used here names the entry type field `kind`, so this code
 uses `entry.kind`. If a future Limine binding names it differently, let the
 compiler guide the small spelling fix.
 
+The memory map math is:
+
+```text
+end = base + length
+```
+
+Each entry describes the half-open physical address range `[base, end)`. Usable
+totals only include ranges where `entry.kind == .usable`; every other kind is
+reserved for firmware, the bootloader, the framebuffer, the kernel, or broken
+memory.
+
 Then call it from `_start` after logging the framebuffer:
+
+File: `kernel/src/main.zig`
 
 ```zig
 boot_info.logFramebuffer(&info);
@@ -369,6 +604,8 @@ Solution:
 
 Put the helpers next to `BootInfo`:
 
+File: `kernel/src/boot/info.zig`
+
 ```zig
 pub fn physToHhdm(info: *const BootInfo, phys: usize) usize {
     return info.hhdm_offset + phys;
@@ -381,6 +618,8 @@ pub fn hhdmToPhys(info: *const BootInfo, virt: usize) usize {
 
 Then log:
 
+File: `kernel/src/boot/info.zig`
+
 ```zig
 pub fn logAddressInfo(info: *const BootInfo) void {
     klog.info("address info");
@@ -392,6 +631,8 @@ pub fn logAddressInfo(info: *const BootInfo) void {
 
 Then call it from `_start` after the other boot-info logs:
 
+File: `kernel/src/main.zig`
+
 ```zig
 boot_info.logFramebuffer(&info);
 boot_info.logMemoryMap(&info);
@@ -400,6 +641,17 @@ boot_info.logAddressInfo(&info);
 
 Do not dereference HHDM addresses yet. This step is only about establishing the
 translation convention.
+
+The HHDM math is:
+
+```text
+virtual = hhdm_offset + physical
+physical = virtual - hhdm_offset
+```
+
+This works because Limine creates a direct virtual mapping of physical memory at
+one fixed offset. These helpers are address conversions; they do not allocate
+memory and they do not edit page tables.
 
 Checkpoint:
 
@@ -414,6 +666,8 @@ messages if something is missing.
 Solution:
 
 Keep `_start` small:
+
+File: `kernel/src/main.zig`
 
 ```zig
 const arch = @import("arch.zig");
@@ -451,6 +705,8 @@ details:
 - `boot_info.logAddressInfo(&info)` logs HHDM and kernel address metadata.
 
 `validate` should check:
+
+File: `kernel/src/boot/info.zig`
 
 ```zig
 pub fn validate(info: *const BootInfo) void {

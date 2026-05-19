@@ -8,6 +8,22 @@ silent hangs or QEMU resets.
 This comes after serial logging because exception handlers need somewhere
 reliable to report what happened.
 
+## Why This Comes Next
+
+The next code needs controlled failure. Once the kernel starts touching page
+tables, allocating memory, and eventually accepting timer or device interrupts,
+faults are expected. Without a GDT, IDT, and exception path, a small mistake can
+turn into a triple fault, QEMU reset, or silent hang with no address or vector to
+debug.
+
+Exceptions and interrupts are needed for:
+
+- readable page fault diagnostics while VM code is developed;
+- catching invalid memory access, bad instructions, and protection faults;
+- enabling timer interrupts for scheduling later;
+- supporting keyboard, mouse, storage, and network interrupts later;
+- giving future execution cells a path toward preemption and failure reporting.
+
 ## What We Will Build
 
 - A minimal GDT.
@@ -26,6 +42,87 @@ reliable to report what happened.
 - Error-code versus no-error-code exceptions.
 - CR2 for page fault address.
 
+## Math Notes
+
+### Descriptor Pointer Size
+
+The CPU expects `lgdt` and `lidt` operands to contain:
+
+```text
+limit: 16 bits = 2 bytes
+base:  64 bits = 8 bytes
+total:          10 bytes
+```
+
+That is why the descriptor pointer size check expects 10 bytes.
+
+The `limit` is the table size minus one:
+
+```text
+limit = byte_size_of_table - 1
+```
+
+For an IDT with 256 entries and 16 bytes per entry:
+
+```text
+size  = 256 * 16 = 4096 bytes
+limit = 4096 - 1 = 4095
+```
+
+### Segment Selectors
+
+Each GDT entry is 8 bytes. A selector is the byte offset of the entry in the
+GDT:
+
+```text
+null descriptor = index 0 -> selector 0x00
+code descriptor = index 1 -> selector 1 * 8 = 0x08
+data descriptor = index 2 -> selector 2 * 8 = 0x10
+```
+
+That is why the plan uses:
+
+```text
+kernel_code_selector = 0x08
+kernel_data_selector = 0x10
+```
+
+### Splitting Handler Addresses
+
+An IDT entry stores a 64-bit handler address in three chunks:
+
+```text
+offset_low  = bits 0..15
+offset_mid  = bits 16..31
+offset_high = bits 32..63
+```
+
+So the code uses truncation and shifts:
+
+```text
+offset_low  = truncate(addr)
+offset_mid  = truncate(addr >> 16)
+offset_high = truncate(addr >> 32)
+```
+
+### Exception Error Codes
+
+Some CPU exceptions push an error code and some do not. To give Zig one uniform
+frame shape, no-error-code stubs push a synthetic `0`. That way the common
+handler can always read:
+
+```text
+vector
+error_code
+saved CPU frame
+```
+
+### Page Fault Address
+
+For vector 14, the CPU stores the faulting virtual address in CR2. Reading CR2
+does not decode the fault by itself; it only tells us which virtual address
+caused the fault.
+
 ## Step 1: Add Descriptor Types
 
 Define packed structures for:
@@ -41,6 +138,8 @@ Create `kernel/src/arch/x86_64/descriptors.zig`.
 
 For descriptor pointers:
 
+File: `kernel/src/arch/x86_64/descriptors.zig`
+
 ```zig
 pub const DescriptorPointer = packed struct {
     limit: u16,
@@ -49,6 +148,8 @@ pub const DescriptorPointer = packed struct {
 ```
 
 For the IDT, use the x86_64 interrupt gate layout:
+
+File: `kernel/src/arch/x86_64/descriptors.zig`
 
 ```zig
 pub const IdtEntry = packed struct {
@@ -67,6 +168,8 @@ pub const IdtEntry = packed struct {
 ```
 
 Add compile-time size checks:
+
+File: `kernel/src/arch/x86_64/descriptors.zig`
 
 ```zig
 comptime {
@@ -97,6 +200,8 @@ code and data selectors.
 
 Start with static entries:
 
+File: `kernel/src/arch/x86_64/descriptors.zig`
+
 ```zig
 const gdt = [_]u64{
     0x0000000000000000, // Null.
@@ -109,6 +214,8 @@ pub const kernel_data_selector: u16 = 0x10;
 ```
 
 Load it:
+
+File: `kernel/src/arch/x86_64/descriptors.zig`
 
 ```zig
 pub fn loadGdt() void {
@@ -141,11 +248,15 @@ Solution:
 
 Create a 256-entry IDT:
 
+File: `kernel/src/arch/x86_64/descriptors.zig`
+
 ```zig
 var idt: [256]IdtEntry = [_]IdtEntry{emptyEntry()} ** 256;
 ```
 
 Add a helper:
+
+File: `kernel/src/arch/x86_64/descriptors.zig`
 
 ```zig
 fn setGate(vector: u8, handler: *const fn () callconv(.naked) void) void {
@@ -167,6 +278,8 @@ fn setGate(vector: u8, handler: *const fn () callconv(.naked) void) void {
 ```
 
 Load it:
+
+File: `kernel/src/arch/x86_64/descriptors.zig`
 
 ```zig
 pub fn loadIdt() void {
@@ -207,6 +320,8 @@ the Zig handler sees one uniform frame.
 
 Sketch for a no-error-code vector:
 
+File: `kernel/src/arch/x86_64/interrupts.zig`
+
 ```zig
 export fn isr_invalid_opcode() callconv(.naked) void {
     asm volatile (
@@ -218,6 +333,8 @@ export fn isr_invalid_opcode() callconv(.naked) void {
 ```
 
 Sketch for a vector with an error code, such as page fault:
+
+File: `kernel/src/arch/x86_64/interrupts.zig`
 
 ```zig
 export fn isr_page_fault() callconv(.naked) void {
@@ -252,6 +369,8 @@ Solution:
 
 Add:
 
+File: `kernel/src/arch/x86_64/interrupts.zig`
+
 ```zig
 fn readCr2() usize {
     return asm volatile ("mov %%cr2, %[value]"
@@ -261,6 +380,8 @@ fn readCr2() usize {
 ```
 
 Then in the common handler:
+
+File: `kernel/src/arch/x86_64/interrupts.zig`
 
 ```zig
 pub fn exceptionHandler(frame: *const ExceptionFrame) noreturn {
@@ -299,6 +420,8 @@ Leave `_start` using `cli`/disabled interrupts for now. CPU exceptions still
 arrive even when external interrupts are disabled.
 
 Add a comment near IDT setup:
+
+File: `kernel/src/arch/x86_64/interrupts.zig`
 
 ```zig
 // External IRQs stay disabled until PIC/APIC initialization exists.

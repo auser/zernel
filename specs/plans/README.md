@@ -6,6 +6,21 @@ through Limine, runs in QEMU, and writes a framebuffer gradient.
 Walk through them in order. Each plan is intentionally scoped so we can learn
 one layer of the workflow before building on it.
 
+## North Star: AI-Native Kernel Primitives
+
+Zernel is not trying to become a Unix clone first and an AI runtime later. The
+early milestones still build normal kernel foundations, but the long-term design
+favors typed objects, explicit capabilities, execution cells, memory policy,
+routing, provenance, and budgeted agent execution.
+
+Near-term rule: do not add model/runtime complexity before the kernel has
+correct memory, interrupts, console, and allocator foundations. The first
+AI-native milestones should introduce vocabulary and narrow kernel mechanisms,
+not networked model calls or large in-kernel runtimes.
+
+See [AI-Native Kernel Primitives](ai-native-kernel-primitives.md) for the shared
+vocabulary these plans are growing toward.
+
 Each step includes an inline `Solution` section. Treat those as tutorial
 solutions and implementation sketches, not final polished kernel APIs. When a
 solution depends on exact Limine or Zig package names, prefer the compiler and
@@ -20,6 +35,9 @@ the current dependency version over the spelling in the prose.
 5. [Virtual Memory Baseline](04-virtual-memory-baseline.md)
 6. [Exceptions And Interrupts](05-exceptions-and-interrupts.md)
 7. [Framebuffer Text Console](06-framebuffer-text-console.md)
+8. [Kernel Object And Capability Skeleton](07-kernel-object-and-capability-skeleton.md)
+9. [Execution Cell Skeleton](08-execution-cell-skeleton.md)
+10. [Routing Plane Skeleton](09-routing-plane-skeleton.md)
 
 ## Why This Order
 
@@ -32,6 +50,12 @@ memory because new page tables need physical pages. Exceptions come after basic
 memory work so faults can be debugged clearly. The framebuffer console comes
 after serial because it is more complex and should not be the only debugging
 path.
+
+The first AI-native plans come after console output because their main value is
+observability: typed objects, capabilities, cells, and routes should be easy to
+dump and inspect while they are still small. They also come before storage,
+networking, and model execution so those later systems can be built around the
+right primitives instead of retrofitted.
 
 ## Working Style
 

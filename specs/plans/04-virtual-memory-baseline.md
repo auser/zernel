@@ -7,6 +7,27 @@ Understand and safely extend the virtual memory environment Limine gives us.
 Do not rush into replacing all mappings. The first target is page table literacy:
 inspect, map, unmap, and translate in a controlled way.
 
+AI-native note: virtual memory is the mechanism that later memory planes will
+use. Keep this plan focused on page table correctness and explicit mappings.
+Policy concepts like ephemeral memory, model memory, shared object memory, or
+agent memory should be modeled above this layer after the basics are reliable.
+
+## Why This Comes Next
+
+The next code needs page table literacy before the kernel can safely create new
+address spaces, map device memory, protect kernel data, or debug page faults.
+Limine gives us a working virtual memory environment, but treating it as magic
+will make later bugs opaque. We need to inspect what exists before we extend it.
+
+Virtual memory helpers are needed for:
+
+- mapping physical pages allocated by the PMM;
+- translating virtual addresses during debugging;
+- creating controlled mappings for devices, stacks, and heap memory;
+- making page fault diagnostics actionable;
+- giving future memory planes a concrete mapping mechanism instead of a policy
+  name with no backend.
+
 ## What We Will Build
 
 - x86_64 page table type definitions.
@@ -23,6 +44,67 @@ inspect, map, unmap, and translate in a controlled way.
 - HHDM as a way to access physical page tables through virtual addresses.
 - Why modifying live page tables requires careful invalidation.
 
+## Math Notes
+
+### 4-Level Page Table Indexes
+
+x86_64 4 KiB paging uses four table levels. Each table has 512 entries:
+
+```text
+512 = 2^9
+```
+
+That means each level consumes 9 bits of the virtual address:
+
+```text
+bits 47..39 = PML4 index
+bits 38..30 = PDPT index
+bits 29..21 = PD index
+bits 20..12 = PT index
+bits 11..0  = offset within 4 KiB page
+```
+
+The mask `0x1ff` keeps 9 bits:
+
+```text
+0x1ff = 511 = 0b1_1111_1111
+```
+
+So:
+
+```text
+pml4_index = (virt >> 39) & 0x1ff
+pt_index   = (virt >> 12) & 0x1ff
+offset     = virt & 0xfff
+```
+
+### Page Offset
+
+A 4 KiB page has `4096 = 2^12` bytes, so the low 12 bits are the byte offset
+within the page:
+
+```text
+offset = virt & 0xfff
+```
+
+### Page Table Entry Address Mask
+
+Page table entries store flags in low bits and a page-aligned physical address
+in the higher bits. Since page addresses are 4 KiB aligned, their low 12 bits
+are zero and can be used for flags.
+
+This mask keeps the address bits and removes the flag bits:
+
+```text
+address_mask = 0x000f_ffff_ffff_f000
+```
+
+### Huge Pages
+
+If the huge-page bit is set at the PDPT level, the mapping is 1 GiB. If it is
+set at the PD level, the mapping is 2 MiB. In those cases, the offset is larger
+than 12 bits because the mapping covers more than one 4 KiB page.
+
 ## Step 1: Add Address Index Helpers
 
 Create helpers that extract:
@@ -36,6 +118,8 @@ Create helpers that extract:
 Solution:
 
 Create `kernel/src/arch/x86_64/paging.zig`:
+
+File: `kernel/src/arch/x86_64/paging.zig`
 
 ```zig
 pub const page_size: usize = 4096;
@@ -78,6 +162,8 @@ Solution:
 
 Add:
 
+File: `kernel/src/arch/x86_64/paging.zig`
+
 ```zig
 pub fn readCr3() usize {
     return asm volatile ("mov %%cr3, %[value]"
@@ -107,6 +193,8 @@ Solution:
 
 Represent page tables as arrays of 512 entries:
 
+File: `kernel/src/arch/x86_64/paging.zig`
+
 ```zig
 const Entry = packed struct(u64) {
     present: bool,
@@ -128,6 +216,8 @@ const Table = [512]Entry;
 ```
 
 Then convert physical to virtual through HHDM:
+
+File: `kernel/src/arch/x86_64/paging.zig`
 
 ```zig
 fn tableFromPhys(info: *const BootInfo, phys: usize) *Table {
@@ -159,6 +249,8 @@ It should walk the page tables and report:
 Solution:
 
 Walk the four levels from CR3:
+
+File: `kernel/src/arch/x86_64/paging.zig`
 
 ```zig
 pub const MappingInfo = struct {
@@ -196,6 +288,8 @@ pub fn translate(info: *const BootInfo, virt: usize) ?MappingInfo {
 
 Start with raw `u64` helpers if that makes the code shorter:
 
+File: `kernel/src/arch/x86_64/paging.zig`
+
 ```zig
 const present: u64 = 1 << 0;
 const huge: u64 = 1 << 7;
@@ -223,6 +317,8 @@ Solution:
 
 Implement this only after the PMM exists:
 
+File: `kernel/src/arch/x86_64/paging.zig`
+
 ```zig
 pub fn mapPage(info: *const BootInfo, virt: usize, phys: usize, flags: u64) void {
     const pml4 = tableFromPhys(info, activeRootTablePhys());
@@ -237,6 +333,8 @@ pub fn mapPage(info: *const BootInfo, virt: usize, phys: usize, flags: u64) void
 
 `ensureNextTable` should allocate one physical page, zero it through HHDM, and
 install it in the parent entry if the parent entry is not present.
+
+File: `kernel/src/arch/x86_64/paging.zig`
 
 ```zig
 fn invlpg(virt: usize) void {
@@ -262,6 +360,8 @@ Add:
 Solution:
 
 Walk to the final PTE and clear it:
+
+File: `kernel/src/arch/x86_64/paging.zig`
 
 ```zig
 pub fn unmapPage(info: *const BootInfo, virt: usize) void {

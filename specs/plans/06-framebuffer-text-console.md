@@ -9,6 +9,23 @@ The framebuffer console is useful, but it is not the first debugging mechanism.
 It has more moving parts than serial output: fonts, glyph rendering, cursor
 state, line wrapping, and scrolling.
 
+## Why This Comes Next
+
+The next code needs local, human-readable output that does not depend on the
+serial terminal. Serial remains the primary early debug path, but a framebuffer
+console makes panics, boot summaries, registry dumps, and future shell output
+visible on the machine's main display.
+
+The framebuffer console is needed for:
+
+- showing boot progress on graphical QEMU and real hardware;
+- making panic and exception output visible without serial setup;
+- providing an output sink for an early kernel monitor or shell;
+- inspecting object, capability, cell, and route registries in a friendlier
+  form;
+- preparing for later UI, compositor, or desktop experiments without making
+  graphics the only debug path.
+
 ## What We Will Build
 
 - A bitmap font.
@@ -25,6 +42,67 @@ state, line wrapping, and scrolling.
 - Bitmap font storage.
 - Character cell dimensions.
 - Why text rendering must not assume contiguous rows of only visible pixels.
+
+## Math Notes
+
+### Pitch Versus Width
+
+`width` is visible pixels per row. `pitch` is bytes per row in memory. They are
+not always the same relationship because firmware may pad each row.
+
+For 32-bit pixels:
+
+```text
+bytes_per_pixel = 4
+pitch_pixels    = pitch / 4
+```
+
+The pixel index for `(x, y)` is:
+
+```text
+index = y * pitch_pixels + x
+```
+
+Use `pitch_pixels`, not `width`, when moving from one framebuffer row to the
+next.
+
+### Character Cell Coordinates
+
+The console uses character-cell coordinates. With an 8x16 font:
+
+```text
+pixel_x = cell_x * 8
+pixel_y = cell_y * 16
+```
+
+The number of text columns and rows is:
+
+```text
+columns = framebuffer_width / font_width
+rows    = framebuffer_height / font_height
+```
+
+### Glyph Bits
+
+Each glyph row is one byte. For an 8-pixel-wide font, bit 7 is the leftmost
+pixel and bit 0 is the rightmost pixel:
+
+```text
+mask = 1 << (7 - column)
+pixel_on = (glyph_row & mask) != 0
+```
+
+### Scrolling
+
+Scrolling up by one text row means copying pixels upward by `font.height` pixel
+rows:
+
+```text
+destination_y = y
+source_y      = y + font.height
+```
+
+The last `font.height` pixel rows are then cleared.
 
 ## Step 1: Pick A Font
 
@@ -44,6 +122,8 @@ characters used in early logs. Then replace it with a full public-domain 8x16
 font once the renderer works.
 
 Shape:
+
+File: `kernel/src/fb/font.zig`
 
 ```zig
 pub const width: usize = 8;
@@ -80,6 +160,8 @@ Add:
 Solution:
 
 Create `kernel/src/fb/console.zig`:
+
+File: `kernel/src/fb/console.zig`
 
 ```zig
 const limine = @import("limine");
@@ -137,6 +219,8 @@ Solution:
 
 Add console state:
 
+File: `kernel/src/fb/console.zig`
+
 ```zig
 var cursor_col: usize = 0;
 var cursor_row: usize = 0;
@@ -153,6 +237,8 @@ fn rows() usize {
 ```
 
 Implement character output:
+
+File: `kernel/src/fb/console.zig`
 
 ```zig
 pub fn putChar(ch: u8) void {
@@ -199,6 +285,8 @@ Solution:
 
 Add a `newline()` helper:
 
+File: `kernel/src/fb/console.zig`
+
 ```zig
 fn newline() void {
     cursor_col = 0;
@@ -211,6 +299,8 @@ fn newline() void {
 ```
 
 Scrolling means copying framebuffer pixels upward by `font.height` pixel rows:
+
+File: `kernel/src/fb/console.zig`
 
 ```zig
 fn scrollOneRow() void {
@@ -251,12 +341,14 @@ Solution:
 
 Change `klog` from direct serial-only output to output sinks:
 
+File: `kernel/src/klog.zig`
+
 ```zig
-const serial = @import("../arch/x86_64/serial.zig");
-const console = @import("../fb/console.zig");
+const arch = @import("arch.zig");
+const console = @import("fb/console.zig");
 
 fn write(bytes: []const u8) void {
-    serial.writeString(bytes);
+    arch.writeEarlyDebug(bytes);
     console.writeString(bytes);
 }
 ```
@@ -281,13 +373,17 @@ Solution:
 
 Make panic use `klog`, not console directly:
 
+File: `kernel/src/panic.zig`
+
 ```zig
+const arch = @import("arch.zig");
+const klog = @import("klog.zig");
+
 pub fn panic(msg: []const u8) noreturn {
     klog.err("PANIC");
     klog.err(msg);
-    console.setColors(0x00ffffff, 0x00800000);
     klog.err("system halted");
-    halt();
+    arch.halt();
 }
 ```
 

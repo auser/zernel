@@ -12,11 +12,30 @@ and memory management should not import `arch/x86_64/...` directly.
 
 Instead, shared code imports one facade:
 
+Example use inside shared kernel files: `kernel/src/main.zig`, `kernel/src/klog.zig`
+
 ```zig
 const arch = @import("arch.zig");
 ```
 
 The facade selects the current architecture module at compile time.
+
+## Why This Comes Next
+
+The next code needs one stable architecture boundary before we add more kernel
+features. Serial I/O, halt loops, paging, interrupt tables, and timer setup all
+depend on CPU-specific instructions, but the boot sequence, logger, panic path,
+memory manager, and future AI-native registries should not become x86_64-only
+by accident.
+
+This facade is needed for:
+
+- keeping shared kernel code buildable for both x86_64 and aarch64;
+- giving early logging and panic code one portable API;
+- adding paging and interrupt support without leaking architecture details into
+  unrelated modules;
+- making future object, capability, cell, and route code depend on kernel
+  services instead of CPU file paths.
 
 ## What We Will Build
 
@@ -39,11 +58,45 @@ The facade selects the current architecture module at compile time.
 - Architecture-specific code can stay isolated in architecture modules.
 - Shared code should depend on behavior, not on x86_64 or aarch64 file paths.
 
+## Math Notes
+
+This plan does not introduce numeric address math, but it does introduce an
+important compile-time selection rule.
+
+The facade behaves like this:
+
+```text
+target architecture -> selected module
+x86_64              -> kernel/src/arch/x86_64.zig
+aarch64             -> kernel/src/arch/aarch64.zig
+```
+
+Because `builtin.cpu.arch` is known at compile time, the `switch` in
+`kernel/src/arch.zig` is not a runtime dispatch table. For an x86_64 build, the
+effective selection is:
+
+```text
+current = @import("arch/x86_64.zig")
+```
+
+For an aarch64 build, it is:
+
+```text
+current = @import("arch/aarch64.zig")
+```
+
+That matters because architecture-specific assembly in `x86_64.zig` does not
+need to be valid for aarch64, and architecture-specific assembly in
+`aarch64.zig` does not need to be valid for x86_64. The facade keeps those
+worlds separate while exposing one small API to shared code.
+
 ## Step 1: Define The Facade
 
 Create `kernel/src/arch.zig`.
 
 Solution:
+
+File: `kernel/src/arch.zig`
 
 ```zig
 const builtin = @import("builtin");
@@ -82,6 +135,8 @@ Create or update `kernel/src/arch/x86_64.zig`.
 
 Solution:
 
+File: `kernel/src/arch/x86_64.zig`
+
 ```zig
 pub const io = @import("x86_64/io.zig");
 pub const serial = @import("x86_64/serial.zig");
@@ -116,6 +171,8 @@ Create `kernel/src/arch/aarch64.zig`.
 
 Solution:
 
+File: `kernel/src/arch/aarch64.zig`
+
 ```zig
 pub fn initEarlyDebug() void {}
 
@@ -145,6 +202,8 @@ Update `kernel/src/main.zig`.
 
 Solution:
 
+File: `kernel/src/main.zig`
+
 ```zig
 const arch = @import("arch.zig");
 const limine = @import("limine");
@@ -163,6 +222,8 @@ export fn _start() callconv(.c) noreturn {
 
 Then replace local architecture switches for halt behavior with:
 
+File: `kernel/src/main.zig`
+
 ```zig
 fn hang() noreturn {
     arch.halt();
@@ -180,6 +241,8 @@ Checkpoint:
 Update `kernel/src/klog.zig`.
 
 Solution:
+
+File: `kernel/src/klog.zig`
 
 ```zig
 const arch = @import("arch.zig");
@@ -246,4 +309,3 @@ Checkpoint:
 - Every supported architecture implements the same small API.
 - `main.zig` and `klog.zig` import `arch.zig`, not x86_64-specific files.
 - `make kernel-x86_64` and `make kernel-aarch64` both pass.
-
