@@ -305,6 +305,8 @@ var boot_inspect_route: route.RouteId = .invalid;
 
 pub fn initBoot(info: *const BootInfo) void {
     // Existing Plan 08 and Plan 09 setup first.
+    routes.reset();
+
     boot_inspect_route = routes.create(
         &cells,
         &capabilities,

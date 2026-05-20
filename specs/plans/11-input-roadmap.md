@@ -48,7 +48,35 @@ kernel/src/interaction/monitor.zig
 The monitor does not import architecture-specific serial code directly. It calls
 `arch.readEarlyDebug()` and `arch.writeEarlyDebug()` through the facade.
 
+## Implementation Order
+
+Implement this plan in stages and keep the files explicit:
+
+```text
+Stage 1:
+  kernel/src/interaction/monitor.zig
+
+Stage 2:
+  kernel/src/interaction/line.zig
+  kernel/src/interaction/command.zig
+  kernel/src/interaction/monitor.zig
+
+Stage 3:
+  kernel/src/interaction/input.zig
+  kernel/src/interaction/line.zig
+  kernel/src/interaction/monitor.zig
+
+Stage 4:
+  kernel/src/arch/x86_64/keyboard.zig
+  kernel/src/interaction/input.zig
+```
+
+Do not create the later files until their stage starts. Stage 1 intentionally
+keeps input helpers local to `monitor.zig`.
+
 ## Stage 1: Stabilize Serial Monitor Input
+
+Status: implemented in `kernel/src/interaction/monitor.zig`.
 
 Keep the first input path byte-oriented and polling-based.
 
@@ -62,7 +90,9 @@ Work to do:
 - avoid dynamic allocation;
 - keep command dispatch read-only except for explicit commands like `halt`.
 
-The monitor can continue to use local helpers:
+File: `kernel/src/interaction/monitor.zig`
+
+The monitor keeps these local helpers during Stage 1:
 
 ```zig
 fn readInputByte() ?u8 {
@@ -74,7 +104,8 @@ fn echoByte(byte: u8) void {
 }
 ```
 
-Implementation in `kernel/src/interaction/monitor.zig`:
+Replace the current byte handling in `readLine` with printable filtering and
+visible backspace erasure:
 
 ```zig
 fn isPrintable(byte: u8) bool {
@@ -112,6 +143,37 @@ fn readLine(buffer: *[max_line]u8) []const u8 {
 }
 ```
 
+The Stage 1 `dispatch` implementation stays in the same file. It should keep
+calling the existing monitor commands directly:
+
+File: `kernel/src/interaction/monitor.zig`
+
+```zig
+fn dispatch(info: *const BootInfo, line: []const u8) void {
+    if (equals(line, "help")) {
+        klog.info("commands: help boot mem fb objects caps cells routes clear halt");
+    } else if (equals(line, "boot")) {
+        boot_info.logAddressInfo(info);
+    } else if (equals(line, "mem")) {
+        boot_info.logMemoryMap(info);
+    } else if (equals(line, "fb")) {
+        boot_info.logFramebuffer(info);
+    } else if (equals(line, "objects")) {
+        core.dumpObjects();
+    } else if (equals(line, "caps")) {
+        core.dumpCapabilities();
+    } else if (equals(line, "cells")) {
+        core.dumpCells();
+    } else if (equals(line, "routes")) {
+        core.dumpRoutes();
+    } else if (equals(line, "halt")) {
+        arch.halt();
+    } else if (line.len != 0) {
+        klog.warn("unknown command");
+    }
+}
+```
+
 Checkpoint:
 
 - Typing in the QEMU serial terminal behaves predictably.
@@ -137,29 +199,93 @@ kernel/src/interaction/command.zig
   command matching, argument parsing, and dispatch helpers
 ```
 
-Concrete move when this split happens:
+File: `kernel/src/interaction/line.zig`
 
 ```zig
-// kernel/src/interaction/line.zig
+const arch = @import("../arch.zig");
+
 pub const max_line = 128;
 
 pub const Reader = struct {
     buffer: [max_line]u8 = undefined,
 
-    pub fn read(self: *Reader) []const u8;
+    pub fn read(self: *Reader) []const u8 {
+        var len: usize = 0;
+        while (true) {
+            const byte = readInputByte() orelse continue;
+            switch (byte) {
+                '\r', '\n' => {
+                    arch.writeEarlyDebug("\n");
+                    return self.buffer[0..len];
+                },
+                8, 127 => {
+                    if (len > 0) {
+                        len -= 1;
+                        erasePreviousByte();
+                    }
+                },
+                else => {
+                    if (isPrintable(byte) and len < self.buffer.len) {
+                        self.buffer[len] = byte;
+                        len += 1;
+                        echoByte(byte);
+                    }
+                },
+            }
+        }
+    }
 };
-
-// kernel/src/interaction/command.zig
-pub fn equals(a: []const u8, b: []const u8) bool;
 ```
 
-Then `monitor.zig` keeps only:
+File: `kernel/src/interaction/line.zig`
 
 ```zig
+fn readInputByte() ?u8 {
+    return arch.readEarlyDebug();
+}
+
+fn echoByte(byte: u8) void {
+    arch.writeEarlyDebug(&.{byte});
+}
+
+fn erasePreviousByte() void {
+    arch.writeEarlyDebug(&.{ 8, ' ', 8 });
+}
+
+fn isPrintable(byte: u8) bool {
+    return byte >= 0x20 and byte <= 0x7e;
+}
+```
+
+File: `kernel/src/interaction/command.zig`
+
+```zig
+pub fn equals(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+
+    var i: usize = 0;
+    while (i < a.len) : (i += 1) {
+        if (a[i] != b[i]) return false;
+    }
+
+    return true;
+}
+```
+
+File: `kernel/src/interaction/monitor.zig`
+
+After the split, `monitor.zig` imports the helpers and keeps orchestration:
+
+```zig
+const command = @import("command.zig");
+const line = @import("line.zig");
+
 var reader: line.Reader = .{};
 const input = reader.read();
 dispatch(info, input);
 ```
+
+The dispatch checks then call `command.equals(...)` instead of local `equals`.
 
 Do not move a tiny `equals` helper into `utils` just because it exists. Keep it
 local until multiple unrelated subsystems need string helpers. If command
@@ -177,12 +303,21 @@ Checkpoint:
 Do not introduce `interaction/input.zig` until the kernel has at least two input
 sources to unify, such as serial and keyboard.
 
+File: `kernel/src/interaction/input.zig`
+
 Concrete event shape once a second input source exists:
 
 ```zig
+const arch = @import("../arch.zig");
+
 pub const Source = enum {
     early_debug,
     keyboard,
+};
+
+pub const Key = struct {
+    code: u16,
+    pressed: bool,
 };
 
 pub const Event = union(enum) {
@@ -191,17 +326,9 @@ pub const Event = union(enum) {
 };
 ```
 
-Concrete file once keyboard exists:
+File: `kernel/src/interaction/input.zig`
 
-```text
-kernel/src/interaction/input.zig
-  Source
-  Key
-  Event
-  poll
-```
-
-`poll` can keep serial as the first source:
+`poll` keeps serial as the first source:
 
 ```zig
 pub fn poll() ?Event {
@@ -212,8 +339,25 @@ pub fn poll() ?Event {
 }
 ```
 
-That layer should represent input events. It should not own the serial driver,
-keyboard driver, monitor commands, or framebuffer console.
+File: `kernel/src/interaction/line.zig`
+
+Once `input.zig` exists, the line reader consumes `input.poll()` instead of
+calling `arch.readEarlyDebug()` directly:
+
+```zig
+const input = @import("input.zig");
+
+fn readInputByte() ?u8 {
+    const event = input.poll() orelse return null;
+    return switch (event) {
+        .byte => |byte| byte,
+        .key => null,
+    };
+}
+```
+
+`input.zig` represents input events. It does not own the serial driver, keyboard
+driver, monitor commands, or framebuffer console.
 
 Checkpoint:
 
@@ -251,6 +395,46 @@ kernel/src/interaction/input.zig
 
 The keyboard driver owns hardware and scancode details. `interaction` owns only
 the event shape and how monitor input consumes it.
+
+File: `kernel/src/arch/x86_64/keyboard.zig`
+
+```zig
+pub const DecodedKey = struct {
+    code: u16,
+    pressed: bool,
+};
+
+pub fn readScancode() ?u8 {
+    // Poll the keyboard controller data port after the IRQ/device layer exists.
+}
+
+pub fn decode(scancode: u8) ?DecodedKey {
+    // Convert a scancode into a key event. Keep modifier tracking here.
+}
+```
+
+File: `kernel/src/interaction/input.zig`
+
+```zig
+const keyboard = @import("../arch/x86_64/keyboard.zig");
+
+pub fn poll() ?Event {
+    if (arch.readEarlyDebug()) |byte| {
+        return .{ .byte = byte };
+    }
+
+    if (keyboard.readScancode()) |scancode| {
+        if (keyboard.decode(scancode)) |decoded| {
+            return .{ .key = .{
+                .code = decoded.code,
+                .pressed = decoded.pressed,
+            } };
+        }
+    }
+
+    return null;
+}
+```
 
 ## Verification
 

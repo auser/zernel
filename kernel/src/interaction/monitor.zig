@@ -28,10 +28,13 @@ fn readLine(buffer: *[max_line]u8) []const u8 {
         return buffer[0..len];
       },
       8, 127 => {
-        if (len > 0) len -= 1;
+        if (len > 0) {
+          len -= 1;
+          erasePreviousByte();
+        }
       },
       else => {
-        if (len < buffer.len) {
+        if (isPrintable(byte) and len < buffer.len) {
           buffer[len] = byte;
           len += 1;
           echoByte(byte);
@@ -43,7 +46,7 @@ fn readLine(buffer: *[max_line]u8) []const u8 {
 
 fn dispatch(info: *const BootInfo, line: []const u8) void {
     if (equals(line, "help")) {
-        klog.info("commands: help boot mem fb objects caps clear halt");
+        klog.info("commands: help boot mem fb objects caps cells routes clear halt");
     } else if (equals(line, "boot")) {
         boot_info.logAddressInfo(info);
     } else if (equals(line, "mem")) {
@@ -54,6 +57,10 @@ fn dispatch(info: *const BootInfo, line: []const u8) void {
         core.dumpObjects();
     } else if (equals(line, "caps")) {
         core.dumpCapabilities();
+    } else if (equals(line, "cells")) {
+        core.dumpCells();
+    } else if (equals(line, "routes")) {
+        core.dumpRoutes();
     } else if (equals(line, "clear")) {
         // Optional once framebuffer console exposes clear().
     } else if (equals(line, "halt")) {
@@ -69,6 +76,14 @@ fn readInputByte() ?u8 {
 
 fn echoByte(byte: u8) void {
     arch.writeEarlyDebug(&.{byte});
+}
+
+fn erasePreviousByte() void {
+    arch.writeEarlyDebug(&.{ 8, ' ', 8 });
+}
+
+fn isPrintable(byte: u8) bool {
+    return byte >= 0x20 and byte <= 0x7e;
 }
 
 fn equals(a: []const u8, b: []const u8) bool {

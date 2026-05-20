@@ -128,6 +128,9 @@ pub const CellState = enum(u8) {
     completed,
     failed,
 };
+
+pub const max_cells = 16;
+pub const max_cell_capabilities = 4;
 ```
 
 A cell connects to the existing object and capability model:
@@ -147,9 +150,6 @@ pub const ExecutionCell = struct {
 The first implementation is small but real:
 
 ```zig
-pub const max_cells = 16;
-pub const max_cell_capabilities = 4;
-
 pub const CreateError = error{
     RegistryFull,
     InvalidObject,
@@ -303,6 +303,8 @@ var boot_cell_object: object.ObjectId = .invalid;
 
 pub fn initBoot(info: *const BootInfo) void {
     // Existing Plan 08 object/cap setup first.
+    cells.reset();
+
     boot_cell_object = createObject(.execution_cell, "kernel_boot");
     boot_cell = cells.create(&objects, .kernel_boot, boot_cell_object)
         catch panic("core cell registry init failed");
@@ -358,6 +360,12 @@ const core = @import("../core/system.zig");
 } else if (equals(line, "cells")) {
     core.dumpCells();
 }
+```
+
+When Plan 10 is also implemented, the help string becomes:
+
+```text
+commands: help boot mem fb objects caps cells routes clear halt
 ```
 
 Verification:
