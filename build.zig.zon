@@ -1,0 +1,20 @@
+.{
+    .name = .zernel,
+    .version = "0.0.1",
+    .fingerprint = 0x95584b952bc92195,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .limine = .{
+            .url = "https://github.com/48cf/limine-zig/archive/7b29b6e6f6d35052f01ed3831085a39aae131705.tar.gz",
+            .hash = "N-V-__8AAGg-AAD5Rvg56rLsSdyhyAXOcqw-PvnEezr83s0c",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "kernel",
+        "boot",
+        "specs",
+        "Makefile",
+    },
+}
