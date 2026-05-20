@@ -64,8 +64,19 @@ Place the first monitor implementation under `kernel/src/interaction/`:
 ```text
 kernel/src/interaction/monitor.zig
   run
-  readLine
   dispatch
+
+kernel/src/interaction/line.zig
+  Reader
+  fixed-buffer line input and editing
+
+kernel/src/interaction/command.zig
+  equals
+  command matching helpers
+
+kernel/src/interaction/input.zig
+  poll
+  input event source
 ```
 
 The monitor is a debugging tool today, but its architectural role is the first
@@ -73,18 +84,13 @@ kernel interaction surface. Keeping it under `interaction` leaves room for
 future serial, keyboard, command, and line-editing code without mixing those
 entry points into architecture code, framebuffer code, or generic utilities.
 
-Keep the initial version in one file. Split it only when the responsibilities
-become real:
+The initial version can start in one file. Once line editing and command
+matching grow, split them into the helper files:
 
 ```text
 kernel/src/interaction/line.zig
-  fixed-buffer line input and editing
-
 kernel/src/interaction/command.zig
-  command matching and dispatch helpers
-
-kernel/src/interaction/serial.zig
-  serial-backed monitor frontend
+kernel/src/interaction/input.zig
 ```
 
 The inspected systems should stay in their own directories. For example, memory

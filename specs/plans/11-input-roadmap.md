@@ -36,13 +36,22 @@ kernel/src/arch/x86_64.zig
 
 kernel/src/arch.zig
   readEarlyDebug
+  readKeyboardKey
 
 kernel/src/interaction/monitor.zig
-  readInputByte
-  echoByte
-  readLine
   dispatch
   run
+
+kernel/src/interaction/line.zig
+  Reader
+  readInputByte
+  echoByte
+
+kernel/src/interaction/command.zig
+  equals
+
+kernel/src/interaction/input.zig
+  poll
 ```
 
 The monitor does not import architecture-specific serial code directly. It calls
@@ -183,6 +192,9 @@ Checkpoint:
 
 ## Stage 2: Split Interaction Helpers Only When Needed
 
+Status: implemented in `kernel/src/interaction/line.zig`,
+`kernel/src/interaction/command.zig`, and `kernel/src/interaction/monitor.zig`.
+
 Keep `interaction/monitor.zig` as the orchestration point while the code is
 small. Split files only when the responsibilities become stable.
 
@@ -202,37 +214,65 @@ kernel/src/interaction/command.zig
 File: `kernel/src/interaction/line.zig`
 
 ```zig
-const arch = @import("../arch.zig");
+const input = @import("input.zig");
 
 pub const max_line = 128;
+pub const WriteFn = *const fn ([]const u8) void;
 
 pub const Reader = struct {
     buffer: [max_line]u8 = undefined,
+    read_byte: input.ReadByteFn,
+    read_key: input.ReadKeyFn,
+    write: WriteFn,
+
+    pub fn init(read_byte: input.ReadByteFn, read_key: input.ReadKeyFn, write: WriteFn) Reader {
+        return .{
+            .read_byte = read_byte,
+            .read_key = read_key,
+            .write = write,
+        };
+    }
 
     pub fn read(self: *Reader) []const u8 {
         var len: usize = 0;
         while (true) {
-            const byte = readInputByte() orelse continue;
+            const byte = self.readInputByte() orelse continue;
             switch (byte) {
                 '\r', '\n' => {
-                    arch.writeEarlyDebug("\n");
+                    self.write("\n");
                     return self.buffer[0..len];
                 },
                 8, 127 => {
                     if (len > 0) {
                         len -= 1;
-                        erasePreviousByte();
+                        self.erasePreviousByte();
                     }
                 },
                 else => {
                     if (isPrintable(byte) and len < self.buffer.len) {
                         self.buffer[len] = byte;
                         len += 1;
-                        echoByte(byte);
+                        self.echoByte(byte);
                     }
                 },
             }
         }
+    }
+
+    fn readInputByte(self: *Reader) ?u8 {
+        const event = input.poll(self.read_byte, self.read_key) orelse return null;
+        return switch (event) {
+            .byte => |byte| byte,
+            .key => null,
+        };
+    }
+
+    fn echoByte(self: *Reader, byte: u8) void {
+        self.write(&.{byte});
+    }
+
+    fn erasePreviousByte(self: *Reader) void {
+        self.write(&.{ 8, ' ', 8 });
     }
 };
 ```
@@ -240,18 +280,6 @@ pub const Reader = struct {
 File: `kernel/src/interaction/line.zig`
 
 ```zig
-fn readInputByte() ?u8 {
-    return arch.readEarlyDebug();
-}
-
-fn echoByte(byte: u8) void {
-    arch.writeEarlyDebug(&.{byte});
-}
-
-fn erasePreviousByte() void {
-    arch.writeEarlyDebug(&.{ 8, ' ', 8 });
-}
-
 fn isPrintable(byte: u8) bool {
     return byte >= 0x20 and byte <= 0x7e;
 }
@@ -278,14 +306,32 @@ After the split, `monitor.zig` imports the helpers and keeps orchestration:
 
 ```zig
 const command = @import("command.zig");
+const input = @import("input.zig");
 const line = @import("line.zig");
 
-var reader: line.Reader = .{};
-const input = reader.read();
-dispatch(info, input);
+var reader = line.Reader.init(readEarlyDebug, readKeyboardKey, writeDebug);
+const input_line = reader.read();
+dispatch(info, input_line);
 ```
 
 The dispatch checks then call `command.equals(...)` instead of local `equals`.
+`monitor.zig` owns the small wrappers that adapt `arch.zig` to interaction
+function pointers:
+
+```zig
+fn readEarlyDebug() ?u8 {
+    return arch.readEarlyDebug();
+}
+
+fn readKeyboardKey() ?input.Key {
+    const key = arch.readKeyboardKey() orelse return null;
+    return .{ .code = key.code, .pressed = key.pressed };
+}
+
+fn writeDebug(bytes: []const u8) void {
+    arch.writeEarlyDebug(bytes);
+}
+```
 
 Do not move a tiny `equals` helper into `utils` just because it exists. Keep it
 local until multiple unrelated subsystems need string helpers. If command
@@ -300,6 +346,9 @@ Checkpoint:
 
 ## Stage 3: Add An Input Abstraction When There Is A Second Source
 
+Status: implemented as an architecture-neutral polling layer in
+`kernel/src/interaction/input.zig`.
+
 Do not introduce `interaction/input.zig` until the kernel has at least two input
 sources to unify, such as serial and keyboard.
 
@@ -308,8 +357,6 @@ File: `kernel/src/interaction/input.zig`
 Concrete event shape once a second input source exists:
 
 ```zig
-const arch = @import("../arch.zig");
-
 pub const Source = enum {
     early_debug,
     keyboard,
@@ -331,9 +378,18 @@ File: `kernel/src/interaction/input.zig`
 `poll` keeps serial as the first source:
 
 ```zig
-pub fn poll() ?Event {
-    if (arch.readEarlyDebug()) |byte| {
+pub const ReadByteFn = *const fn () ?u8;
+pub const ReadKeyFn = *const fn () ?Key;
+
+pub fn poll(read_byte: ReadByteFn, read_key: ReadKeyFn) ?Event {
+    if (read_byte()) |byte| {
         return .{ .byte = byte };
+    }
+    if (read_key()) |key| {
+        return .{ .key = .{
+            .code = key.code,
+            .pressed = key.pressed,
+        } };
     }
     return null;
 }
@@ -341,14 +397,15 @@ pub fn poll() ?Event {
 
 File: `kernel/src/interaction/line.zig`
 
-Once `input.zig` exists, the line reader consumes `input.poll()` instead of
-calling `arch.readEarlyDebug()` directly:
+Once `input.zig` exists, the line reader consumes `input.poll(...)` through
+function pointers supplied by `monitor.zig` instead of importing `arch.zig`
+directly:
 
 ```zig
 const input = @import("input.zig");
 
-fn readInputByte() ?u8 {
-    const event = input.poll() orelse return null;
+fn readInputByte(self: *Reader) ?u8 {
+    const event = input.poll(self.read_byte, self.read_key) orelse return null;
     return switch (event) {
         .byte => |byte| byte,
         .key => null,
@@ -366,6 +423,9 @@ Checkpoint:
 - architecture and device drivers still own hardware details.
 
 ## Stage 4: Keyboard Comes Later
+
+Status: stubbed through the architecture facade. The x86_64 keyboard file
+exists, but it returns no key events until the interrupt/device layer is ready.
 
 Keyboard input should wait until the kernel has stronger interrupt and device
 structure.
@@ -385,12 +445,25 @@ serial monitor. Serial should remain the lowest-friction debugging path.
 Implementation boundary:
 
 ```text
+kernel/src/arch.zig
+  KeyboardKey
+  readKeyboardKey
+
+kernel/src/arch/x86_64.zig
+  KeyboardKey
+  readKeyboardKey
+
+kernel/src/arch/aarch64.zig
+  KeyboardKey
+  readKeyboardKey
+
 kernel/src/arch/x86_64/keyboard.zig
+  DecodedKey
   readScancode
   decode
 
 kernel/src/interaction/input.zig
-  converts decoded keys into interaction events
+  converts architecture keyboard keys into interaction events
 ```
 
 The keyboard driver owns hardware and scancode details. `interaction` owns only
@@ -405,34 +478,34 @@ pub const DecodedKey = struct {
 };
 
 pub fn readScancode() ?u8 {
-    // Poll the keyboard controller data port after the IRQ/device layer exists.
+    return null;
 }
 
 pub fn decode(scancode: u8) ?DecodedKey {
-    // Convert a scancode into a key event. Keep modifier tracking here.
+    _ = scancode;
+    return null;
 }
 ```
 
-File: `kernel/src/interaction/input.zig`
+File: `kernel/src/arch/x86_64.zig`
 
 ```zig
-const keyboard = @import("../arch/x86_64/keyboard.zig");
+pub const keyboard = @import("x86_64/keyboard.zig");
+pub const KeyboardKey = keyboard.DecodedKey;
 
-pub fn poll() ?Event {
-    if (arch.readEarlyDebug()) |byte| {
-        return .{ .byte = byte };
-    }
+pub fn readKeyboardKey() ?KeyboardKey {
+    const scancode = keyboard.readScancode() orelse return null;
+    return keyboard.decode(scancode);
+}
+```
 
-    if (keyboard.readScancode()) |scancode| {
-        if (keyboard.decode(scancode)) |decoded| {
-            return .{ .key = .{
-                .code = decoded.code,
-                .pressed = decoded.pressed,
-            } };
-        }
-    }
+File: `kernel/src/arch.zig`
 
-    return null;
+```zig
+pub const KeyboardKey = current.KeyboardKey;
+
+pub fn readKeyboardKey() ?KeyboardKey {
+    return current.readKeyboardKey();
 }
 ```
 
@@ -445,12 +518,11 @@ make kernel-x86_64
 ```
 
 When `line.zig`, `command.zig`, or `input.zig` appears, add host tests for pure
-logic:
+logic. Interaction modules import files outside their own directory, so test
+them through the package-root aggregator:
 
 ```text
-zig test kernel/src/interaction/command.zig
-zig test kernel/src/interaction/line.zig
-zig test kernel/src/interaction/input.zig
+cd kernel && zig test src/interaction/tests.zig
 ```
 
 ## Non-Goals

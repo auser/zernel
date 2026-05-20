@@ -59,6 +59,14 @@ what consumes it, and how to inspect it.
 10. [Execution Cell Skeleton](09-execution-cell-skeleton.md)
 11. [Routing Plane Skeleton](10-routing-plane-skeleton.md)
 12. [Input Roadmap](11-input-roadmap.md)
+13. [AI-Native Security Roadmap](12-ai-native-security-roadmap.md)
+14. [Capability Hardening](13-capability-hardening.md)
+15. [Provenance And Audit Trail](14-provenance-and-audit-trail.md)
+16. [Memory Safety Foundation](15-memory-safety-foundation.md)
+17. [Timers And Scheduler Skeleton](16-timers-and-scheduler-skeleton.md)
+18. [Cell Isolation Boundary](17-cell-isolation-boundary.md)
+19. [Route Dispatcher And Policy Hooks](18-route-dispatcher-and-policy-hooks.md)
+20. [Production Verification And Release Gates](19-production-verification-and-release-gates.md)
 
 ## Why This Order
 

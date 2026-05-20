@@ -7,6 +7,7 @@ const current = switch (builtin.cpu.arch) {
 };
 
 pub const paging = current.paging;
+pub const KeyboardKey = current.KeyboardKey;
 
 pub fn initEarlyDebug() void {
     current.initEarlyDebug();
@@ -18,6 +19,14 @@ pub fn writeEarlyDebug(message: []const u8) void {
 
 pub fn readEarlyDebug() ?u8 {
     return current.readEarlyDebug();
+}
+
+pub fn readKeyboardKey() ?KeyboardKey {
+    return current.readKeyboardKey();
+}
+
+pub fn initTimer() void {
+    current.initTimer();
 }
 
 pub fn halt() noreturn {

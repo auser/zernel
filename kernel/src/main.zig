@@ -1,8 +1,11 @@
 const arch = @import("arch.zig");
 const boot_info = @import("boot/info.zig");
+const build_options = @import("build_options");
 const core = @import("core/system.zig");
+const heap = @import("mem/heap.zig");
 const klog = @import("utils/klog.zig");
 const limine = @import("limine");
+const pmm = @import("mem/pmm.zig");
 const monitor = @import("interaction/monitor.zig");
 
 const panic = @import("utils/panic.zig").panic;
@@ -12,6 +15,9 @@ export fn _start() callconv(.c) noreturn {
     arch.initEarlyDebug();
     klog.info("zernel: booting");
     klog.info("serial initialized");
+    if (build_options.panic_smoke) {
+        panic("panic smoke test");
+    }
 
     if (!boot_info.base_revision.is_supported()) {
         panic("unsupported Limine base revision");
@@ -19,7 +25,11 @@ export fn _start() callconv(.c) noreturn {
 
     const info = boot_info.load();
     boot_info.validate(&info);
+    pmm.init(&info);
+    heap.init(&info, heap.default_bootstrap_pages) catch panic("bootstrap heap init failed");
     core.initBoot(&info);
+    arch.initTimer();
+    core.dumpBootReport();
     boot_info.logFramebuffer(&info);
     boot_info.logMemoryMap(&info);
     boot_info.logAddressInfo(&info);
@@ -30,22 +40,22 @@ export fn _start() callconv(.c) noreturn {
 }
 
 fn paint(framebuffer: *limine.Framebuffer) void {
-  const width: usize = @intCast(framebuffer.width);
-  const height: usize = @intCast(framebuffer.height);
-  const pitch: usize = @intCast(framebuffer.pitch);
+    const width: usize = @intCast(framebuffer.width);
+    const height: usize = @intCast(framebuffer.height);
+    const pitch: usize = @intCast(framebuffer.pitch);
 
-  const pixels_per_line = pitch / 4;
+    const pixels_per_line = pitch / 4;
 
-  const raw_pixels: [*]volatile u32 = @ptrCast(@alignCast(framebuffer.address));
+    const raw_pixels: [*]volatile u32 = @ptrCast(@alignCast(framebuffer.address));
 
-  var y: usize = 0;
-  while (y < height): (y+=1) {
-    var x: usize = 0;
-    while (x<width):(x+=1) {
-      const red: u32 = @intCast((x * 255) / width);
-      const green: u32 = @intCast((y * 255) / height);
-      const blue: u32 = 0x40;
-      raw_pixels[y * pixels_per_line + x] = (red << 16) | (green << 8) | blue;
+    var y: usize = 0;
+    while (y < height) : (y += 1) {
+        var x: usize = 0;
+        while (x < width) : (x += 1) {
+            const red: u32 = @intCast((x * 255) / width);
+            const green: u32 = @intCast((y * 255) / height);
+            const blue: u32 = 0x40;
+            raw_pixels[y * pixels_per_line + x] = (red << 16) | (green << 8) | blue;
+        }
     }
-  }
 }

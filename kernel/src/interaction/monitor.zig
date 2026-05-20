@@ -2,97 +2,75 @@ const arch = @import("../arch.zig");
 const klog = @import("../utils/klog.zig");
 const boot_info = @import("../boot/info.zig");
 const core = @import("../core/system.zig");
+const command = @import("command.zig");
+const input = @import("input.zig");
+const line = @import("line.zig");
 
 const BootInfo = boot_info.BootInfo;
 
-const max_line = 128;
-
 pub fn run(info: *const BootInfo) noreturn {
-  var buffer: [max_line]u8 = undefined;
+    var reader = line.Reader.init(readEarlyDebug, readKeyboardKey, writeDebug);
 
-  klog.info("monitor ready");
-  while (true) {
-    arch.writeEarlyDebug("> ");
-    const line = readLine(&buffer);
-    dispatch(info, line);
-  }
-}
-
-fn readLine(buffer: *[max_line]u8) []const u8 {
-  var len: usize = 0;
-  while (true) {
-    const byte = readInputByte() orelse continue;
-    switch (byte) {
-      '\r', '\n' => {
-        klog.info("");
-        return buffer[0..len];
-      },
-      8, 127 => {
-        if (len > 0) {
-          len -= 1;
-          erasePreviousByte();
-        }
-      },
-      else => {
-        if (isPrintable(byte) and len < buffer.len) {
-          buffer[len] = byte;
-          len += 1;
-          echoByte(byte);
-        }
-      },
-    }
-  }
-}
-
-fn dispatch(info: *const BootInfo, line: []const u8) void {
-    if (equals(line, "help")) {
-        klog.info("commands: help boot mem fb objects caps cells routes clear halt");
-    } else if (equals(line, "boot")) {
-        boot_info.logAddressInfo(info);
-    } else if (equals(line, "mem")) {
-        boot_info.logMemoryMap(info);
-    } else if (equals(line, "fb")) {
-        boot_info.logFramebuffer(info);
-    } else if (equals(line, "objects")) {
-        core.dumpObjects();
-    } else if (equals(line, "caps")) {
-        core.dumpCapabilities();
-    } else if (equals(line, "cells")) {
-        core.dumpCells();
-    } else if (equals(line, "routes")) {
-        core.dumpRoutes();
-    } else if (equals(line, "clear")) {
-        // Optional once framebuffer console exposes clear().
-    } else if (equals(line, "halt")) {
-        arch.halt();
-    } else if (line.len != 0) {
-        klog.warn("unknown command");
+    klog.info("monitor ready");
+    while (true) {
+        arch.writeEarlyDebug("> ");
+        const input_line = reader.read();
+        dispatch(info, input_line);
     }
 }
 
-fn readInputByte() ?u8 {
+fn readEarlyDebug() ?u8 {
     return arch.readEarlyDebug();
 }
 
-fn echoByte(byte: u8) void {
-    arch.writeEarlyDebug(&.{byte});
+fn readKeyboardKey() ?input.Key {
+    const key = arch.readKeyboardKey() orelse return null;
+    return .{
+        .code = key.code,
+        .pressed = key.pressed,
+    };
 }
 
-fn erasePreviousByte() void {
-    arch.writeEarlyDebug(&.{ 8, ' ', 8 });
+fn writeDebug(bytes: []const u8) void {
+    arch.writeEarlyDebug(bytes);
 }
 
-fn isPrintable(byte: u8) bool {
-    return byte >= 0x20 and byte <= 0x7e;
-}
-
-fn equals(a: []const u8, b: []const u8) bool {
-    if (a.len != b.len) return false;
-
-    var i: usize = 0;
-    while (i < a.len) : (i += 1) {
-        if (a[i] != b[i]) return false;
+fn dispatch(info: *const BootInfo, input_line: []const u8) void {
+    if (command.equals(input_line, "help")) {
+        klog.info("commands: help boot mem fb objects caps cells routes dispatch scheduler tick provenance provenance-json clear halt");
+    } else if (command.equals(input_line, "boot")) {
+        boot_info.logAddressInfo(info);
+    } else if (command.equals(input_line, "mem")) {
+        boot_info.logMemoryMap(info);
+    } else if (command.equals(input_line, "fb")) {
+        boot_info.logFramebuffer(info);
+    } else if (command.equals(input_line, "objects")) {
+        core.dumpObjects();
+    } else if (command.equals(input_line, "caps")) {
+        core.dumpCapabilities();
+    } else if (command.equals(input_line, "cells")) {
+        core.dumpCells();
+    } else if (command.equals(input_line, "routes")) {
+        core.dumpRoutes();
+    } else if (command.equals(input_line, "dispatch")) {
+        _ = core.dispatchNextRoute() catch {
+            klog.warn("dispatch failed");
+        };
+        core.dumpRoutes();
+    } else if (command.equals(input_line, "scheduler")) {
+        core.dumpScheduler();
+    } else if (command.equals(input_line, "tick")) {
+        _ = core.schedulerTick();
+        core.dumpScheduler();
+    } else if (command.equals(input_line, "provenance")) {
+        core.dumpProvenance();
+    } else if (command.equals(input_line, "provenance-json")) {
+        core.dumpProvenanceJsonLines();
+    } else if (command.equals(input_line, "clear")) {
+        // Optional once framebuffer console exposes clear().
+    } else if (command.equals(input_line, "halt")) {
+        arch.halt();
+    } else if (input_line.len != 0) {
+        klog.warn("unknown command");
     }
-
-    return true;
 }

@@ -34,6 +34,7 @@ Virtual memory helpers are needed for:
 - Helpers for page table index extraction.
 - A way to read the active root page table.
 - A mapper that can create simple 4 KiB mappings.
+- Typed mapping permissions that reject writable executable kernel mappings.
 - Debug routines that log translations and mapping flags.
 - A minimal aarch64 paging module for shared helpers where the concepts match.
 
