@@ -1,5 +1,6 @@
 const arch = @import("arch.zig");
 const boot_info = @import("boot/info.zig");
+const core = @import("core/system.zig");
 const klog = @import("utils/klog.zig");
 const limine = @import("limine");
 const monitor = @import("interaction/monitor.zig");
@@ -18,6 +19,7 @@ export fn _start() callconv(.c) noreturn {
 
     const info = boot_info.load();
     boot_info.validate(&info);
+    core.initBoot(&info);
     boot_info.logFramebuffer(&info);
     boot_info.logMemoryMap(&info);
     boot_info.logAddressInfo(&info);

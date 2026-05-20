@@ -1,6 +1,7 @@
 const arch = @import("../arch.zig");
 const klog = @import("../utils/klog.zig");
 const boot_info = @import("../boot/info.zig");
+const core = @import("../core/system.zig");
 
 const BootInfo = boot_info.BootInfo;
 
@@ -42,13 +43,17 @@ fn readLine(buffer: *[max_line]u8) []const u8 {
 
 fn dispatch(info: *const BootInfo, line: []const u8) void {
     if (equals(line, "help")) {
-        klog.info("commands: help boot mem fb clear halt");
+        klog.info("commands: help boot mem fb objects caps clear halt");
     } else if (equals(line, "boot")) {
         boot_info.logAddressInfo(info);
     } else if (equals(line, "mem")) {
         boot_info.logMemoryMap(info);
     } else if (equals(line, "fb")) {
         boot_info.logFramebuffer(info);
+    } else if (equals(line, "objects")) {
+        core.dumpObjects();
+    } else if (equals(line, "caps")) {
+        core.dumpCapabilities();
     } else if (equals(line, "clear")) {
         // Optional once framebuffer console exposes clear().
     } else if (equals(line, "halt")) {

@@ -21,10 +21,29 @@ not networked model calls or large in-kernel runtimes.
 See [AI-Native Kernel Primitives](ai-native-kernel-primitives.md) for the shared
 vocabulary these plans are growing toward.
 
-Each step includes an inline `Solution` section. Treat those as tutorial
-solutions and implementation sketches, not final polished kernel APIs. When a
-solution depends on exact Limine or Zig package names, prefer the compiler and
-the current dependency version over the spelling in the prose.
+Each step includes concrete implementation details: file paths, public APIs,
+boot wiring, monitor commands when relevant, and verification commands. Treat
+the code snippets as the intended implementation shape, not abstract sketches.
+When a solution depends on exact Limine or Zig package names, prefer the
+compiler and the current dependency version over stale prose.
+
+## Implementation Standard
+
+Every plan must include enough implementation detail to build the feature
+without inventing the architecture while coding. At minimum, each plan should
+name:
+
+- exact files to create or edit;
+- public functions, structs, enums, and errors;
+- boot-time wiring through `main.zig` or another owning module;
+- monitor commands or debug dumps when the feature is meant to be observable;
+- validation and failure behavior;
+- host-side tests for pure logic where practical;
+- the build or test command that proves the step works.
+
+Avoid placeholder-only plans. If a plan introduces a registry, route, cell,
+input path, or other kernel mechanism, it must also say what initializes it,
+what consumes it, and how to inspect it.
 
 ## Order
 
@@ -39,6 +58,7 @@ the current dependency version over the spelling in the prose.
 9. [Kernel Object And Capability Skeleton](08-kernel-object-and-capability-skeleton.md)
 10. [Execution Cell Skeleton](09-execution-cell-skeleton.md)
 11. [Routing Plane Skeleton](10-routing-plane-skeleton.md)
+12. [Input Roadmap](11-input-roadmap.md)
 
 ## Why This Order
 
@@ -62,6 +82,10 @@ observability: typed objects, capabilities, cells, and routes should be easy to
 dump and inspect while they are still small. They also come before storage,
 networking, and model execution so those later systems can be built around the
 right primitives instead of retrofitted.
+
+The input roadmap captures the path after the first serial monitor: stabilize
+polled serial input first, split interaction helpers only when the code earns
+the structure, and wait for interrupt/device foundations before keyboard input.
 
 ## Working Style
 

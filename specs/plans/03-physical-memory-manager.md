@@ -381,7 +381,7 @@ Initialization has five jobs:
 4. Mark every page used by default.
 5. Mark usable memory free, then reserve the bitmap and page zero.
 
-Solution sketch:
+Implementation:
 
 File: `kernel/src/mem/pmm.zig`
 
@@ -425,7 +425,7 @@ Why the bitmap is accessed through HHDM:
 - Plan 02 gave us `boot_info.physToHhdm(info, bitmap_phys)`.
 - That returns a virtual address mapped to the same physical memory.
 
-Helper sketches:
+Helper implementations:
 
 File: `kernel/src/mem/pmm.zig`
 

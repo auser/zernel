@@ -34,6 +34,7 @@ Objects and capabilities are needed for:
 - Fixed-size object and capability registries.
 - Functions to create objects, grant capabilities, and dump registry state.
 - A boot-time smoke test that creates a few objects and capabilities.
+- Monitor commands that dump objects and capabilities on demand.
 - Host-side tests for pure registry behavior where possible.
 
 ## Non-Goals
@@ -84,9 +85,20 @@ kernel/src/core/capability.zig
   CapabilityRights
   Capability
   Registry
+
+kernel/src/core/system.zig
+  boot-time core state
+  initBoot
+  dumpObjects
+  dumpCapabilities
 ```
 
-## API Sketch
+`object.zig` and `capability.zig` should stay mostly pure: value types,
+registry storage, and registry operations. `system.zig` is the integration
+module that owns the initial global registries while the kernel has no allocator
+or dependency injection story.
+
+## Implemented API Shape
 
 ```zig
 pub const ObjectId = enum(u32) { invalid = 0, _ };
@@ -119,10 +131,230 @@ pub const CapabilityRights = packed struct(u32) {
 };
 ```
 
+The implementation includes fixed-size registries. Keep the local type name
+`Registry` in each module and rely on module qualification at use sites:
+
+```zig
+var objects: object.Registry = .{};
+var capabilities: capability.Registry = .{};
+```
+
+File: `kernel/src/core/object.zig`
+
+Object registry implementation:
+
+```zig
+pub const max_objects = 32;
+
+pub const CreateError = error{
+    RegistryFull,
+};
+
+pub const Registry = struct {
+    entries: [max_objects]KernelObject = undefined,
+    count: usize = 0,
+    next_generation: u32 = 1,
+
+    pub fn reset(self: *Registry) void {
+        self.count = 0;
+        self.next_generation = 1;
+    }
+
+    pub fn create(self: *Registry, kind: ObjectKind, name: []const u8) CreateError!ObjectId {
+        if (self.count >= self.entries.len) return error.RegistryFull;
+
+        const id: ObjectId = @enumFromInt(self.count + 1);
+        self.entries[self.count] = .{
+            .id = id,
+            .kind = kind,
+            .generation = self.next_generation,
+            .name = name,
+        };
+
+        self.count += 1;
+        self.next_generation += 1;
+        return id;
+    }
+
+    pub fn get(self: *const Registry, id: ObjectId) ?*const KernelObject {
+        const raw = @intFromEnum(id);
+        if (raw == 0) return null;
+
+        const index: usize = @intCast(raw - 1);
+        if (index >= self.count) return null;
+        return &self.entries[index];
+    }
+
+    pub fn at(self: *const Registry, index: usize) ?*const KernelObject {
+        if (index >= self.count) return null;
+        return &self.entries[index];
+    }
+};
+```
+
+File: `kernel/src/core/capability.zig`
+
+Capability registry implementation:
+
+```zig
+pub const CapabilityId = enum(u32) { invalid = 0, _ };
+
+pub const Capability = struct {
+    id: CapabilityId,
+    target: object.ObjectId,
+    rights: CapabilityRights,
+    generation: u32,
+};
+
+pub const max_capabilities = 32;
+
+pub const GrantError = error{
+    RegistryFull,
+    InvalidTarget,
+};
+
+pub const Registry = struct {
+    entries: [max_capabilities]Capability = undefined,
+    count: usize = 0,
+    next_generation: u32 = 1,
+
+    pub fn reset(self: *Registry) void {
+        self.count = 0;
+        self.next_generation = 1;
+    }
+
+    pub fn grant(
+        self: *Registry,
+        objects: *const object.Registry,
+        target: object.ObjectId,
+        rights: CapabilityRights,
+    ) GrantError!CapabilityId {
+        if (objects.get(target) == null) return error.InvalidTarget;
+        if (self.count >= self.entries.len) return error.RegistryFull;
+
+        const id: CapabilityId = @enumFromInt(self.count + 1);
+        self.entries[self.count] = .{
+            .id = id,
+            .target = target,
+            .rights = rights,
+            .generation = self.next_generation,
+        };
+
+        self.count += 1;
+        self.next_generation += 1;
+        return id;
+    }
+
+    pub fn get(self: *const Registry, id: CapabilityId) ?*const Capability {
+        const raw = @intFromEnum(id);
+        if (raw == 0) return null;
+
+        const index: usize = @intCast(raw - 1);
+        if (index >= self.count) return null;
+        return &self.entries[index];
+    }
+
+    pub fn at(self: *const Registry, index: usize) ?*const Capability {
+        if (index >= self.count) return null;
+        return &self.entries[index];
+    }
+};
+```
+
+File behavior:
+
+```text
+object.Registry
+  reset clears count and generation state
+  create allocates ids from count + 1 and returns RegistryFull when full
+  get rejects ObjectId.invalid and out-of-range ids
+  at returns entries by dense registry index for dumps
+
+capability.Registry
+  reset clears count and generation state
+  grant validates the target object before allocating a capability id
+  grant returns InvalidTarget before RegistryFull for bad object ids
+  get rejects CapabilityId.invalid and out-of-range ids
+  at returns entries by dense registry index for dumps
+```
+
+## Integration Contract
+
+This plan is not done when the types compile. The object and capability
+registries are connected to boot and interaction so they are observable.
+
+`main.zig` initializes the core state after boot info is loaded and before
+entering the monitor:
+
+File: `kernel/src/main.zig`
+
+```zig
+const core = @import("core/system.zig");
+
+const info = boot_info.load();
+boot_info.validate(&info);
+core.initBoot(&info);
+```
+
+`core.initBoot` creates real objects for current kernel state:
+
+File: `kernel/src/core/system.zig`
+
+```text
+kernel_log
+framebuffer
+memory_region
+```
+
+It also grants read capabilities over real objects:
+
+```text
+framebuffer read capability -> framebuffer object
+memory map read capability -> memory map object
+```
+
+The monitor has commands that make the new state visible:
+
+File: `kernel/src/interaction/monitor.zig`
+
+```text
+objects
+caps
+```
+
+Those commands call:
+
+```zig
+core.dumpObjects();
+core.dumpCapabilities();
+```
+
+The dumps should use `klog`, so they appear on serial and framebuffer output.
+Later plans must build on these ids instead of creating disconnected registries.
+
+## Implemented Files
+
+```text
+kernel/src/core/object.zig
+kernel/src/core/capability.zig
+kernel/src/core/system.zig
+kernel/src/main.zig
+kernel/src/interaction/monitor.zig
+```
+
+Verification:
+
+```text
+make kernel-x86_64
+zig test kernel/src/core/object.zig
+zig test kernel/src/core/capability.zig
+```
+
 ## Checkpoints
 
 - The kernel boots with the object registry initialized.
 - Serial or framebuffer output can dump all registered objects.
 - At least one capability points at a real object.
+- The serial monitor supports `objects` and `caps`.
 - Invalid object or capability ids fail cleanly.
 - Host-side tests cover id allocation, registry exhaustion, and lookup.
