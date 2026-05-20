@@ -35,9 +35,10 @@ the current dependency version over the spelling in the prose.
 5. [Virtual Memory Baseline](04-virtual-memory-baseline.md)
 6. [Exceptions And Interrupts](05-exceptions-and-interrupts.md)
 7. [Framebuffer Text Console](06-framebuffer-text-console.md)
-8. [Kernel Object And Capability Skeleton](07-kernel-object-and-capability-skeleton.md)
-9. [Execution Cell Skeleton](08-execution-cell-skeleton.md)
-10. [Routing Plane Skeleton](09-routing-plane-skeleton.md)
+8. [Serial Kernel Monitor](07-serial-kernel-monitor.md)
+9. [Kernel Object And Capability Skeleton](08-kernel-object-and-capability-skeleton.md)
+10. [Execution Cell Skeleton](09-execution-cell-skeleton.md)
+11. [Routing Plane Skeleton](10-routing-plane-skeleton.md)
 
 ## Why This Order
 
@@ -50,6 +51,11 @@ memory because new page tables need physical pages. Exceptions come after basic
 memory work so faults can be debugged clearly. The framebuffer console comes
 after serial because it is more complex and should not be the only debugging
 path.
+
+The serial kernel monitor comes before the AI-native skeletons because it gives
+us the first interactive inspection path without needing keyboard interrupts.
+That means object, capability, cell, and route registries can be queried through
+commands instead of only dumped during boot.
 
 The first AI-native plans come after console output because their main value is
 observability: typed objects, capabilities, cells, and routes should be easy to

@@ -1,5 +1,5 @@
 const page = @import("page.zig");
-const panic = @import("../panic.zig").panic;
+const panic = @import("../utils/panic.zig").panic;
 const boot_info = @import("../boot/info.zig");
 const limine = @import("limine");
 

@@ -1,8 +1,10 @@
 const arch = @import("arch.zig");
 const boot_info = @import("boot/info.zig");
-const klog = @import("klog.zig");
+const klog = @import("utils/klog.zig");
 const limine = @import("limine");
-const panic = @import("panic.zig").panic;
+const monitor = @import("interaction/monitor.zig");
+
+const panic = @import("utils/panic.zig").panic;
 
 // This is the entrypoint
 export fn _start() callconv(.c) noreturn {
@@ -21,6 +23,7 @@ export fn _start() callconv(.c) noreturn {
     boot_info.logAddressInfo(&info);
 
     paint(info.framebuffer);
+    monitor.run(&info);
     arch.halt();
 }
 

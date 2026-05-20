@@ -1,6 +1,6 @@
 const limine = @import("limine");
-const klog = @import("../klog.zig");
-const panic = @import("../panic.zig").panic;
+const klog = @import("../utils/klog.zig");
+const panic = @import("../utils/panic.zig").panic;
 
 pub export var base_revision: limine.BaseRevision linksection(".limine_requests") = .{
     .revision = 3,

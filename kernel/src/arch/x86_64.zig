@@ -10,6 +10,10 @@ pub fn writeEarlyDebug(message: []const u8) void {
     serial.writeString(message);
 }
 
+pub fn readEarlyDebug() ?u8 {
+    return serial.readByte();
+}
+
 pub fn halt() noreturn {
     asm volatile ("cli");
     while (true) {

@@ -16,6 +16,10 @@ pub fn writeEarlyDebug(message: []const u8) void {
     current.writeEarlyDebug(message);
 }
 
+pub fn readEarlyDebug() ?u8 {
+    return current.readEarlyDebug();
+}
+
 pub fn halt() noreturn {
     current.halt();
 }

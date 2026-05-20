@@ -29,3 +29,12 @@ pub fn writeString(bytes: []const u8) void {
     writeByte(byte);
   }
 }
+
+pub fn canRead() bool {
+  return (io.inb(com1 + 5) & 1) != 0;
+}
+
+pub fn readByte() ?u8 {
+  if (!canRead()) return null;
+  return io.inb(com1);
+}

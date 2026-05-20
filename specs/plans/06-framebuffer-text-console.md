@@ -35,6 +35,36 @@ The framebuffer console is needed for:
 - Scrolling.
 - Integration with `klog` as a second output sink.
 
+## How This Code Gets Used
+
+Unlike the early paging helpers in Plan 04, the framebuffer console should not
+remain unused infrastructure. The first few steps build private drawing pieces,
+but the plan is only complete once `klog` writes to the console after
+initialization.
+
+The intended use path is:
+
+```text
+main.zig
+  boot_info.load()
+  boot_info.validate()
+  console.init(info.framebuffer)
+  klog.info(...)
+    serial output
+    framebuffer console output
+```
+
+This keeps the dependency order safe:
+
+- logs before `console.init` still go to serial only;
+- logs after `console.init` go to both serial and screen;
+- `panic` continues to use `klog`, so panic output automatically appears on the
+  framebuffer when the console is ready;
+- the console never becomes a requirement for the earliest boot diagnostics.
+
+So yes, Steps 1-4 create helpers that are not useful on their own. Step 5 is the
+point where this plan becomes active in the kernel's normal boot path.
+
 ## Concepts To Understand First
 
 - Framebuffer pitch versus width.
@@ -200,6 +230,8 @@ Checkpoint:
 
 - Drawing `A` at a fixed position works.
 - Pixel writes respect framebuffer pitch.
+- This can be tested from `main.zig` with one temporary `console.drawGlyph(...)`
+  call, then removed once `writeString` works.
 
 ## Step 3: Draw Strings
 
@@ -243,17 +275,14 @@ File: `kernel/src/fb/console.zig`
 ```zig
 pub fn putChar(ch: u8) void {
     switch (ch) {
-        '\n' => {
-            cursor_col = 0;
-            cursor_row += 1;
-        },
+        '\n' => newline(),
         '\r' => cursor_col = 0,
         else => {
+            if (cursor_row >= rows()) return;
             drawGlyph(cursor_col, cursor_row, ch, 0x00ffffff, 0x00000000);
             cursor_col += 1;
             if (cursor_col >= cols()) {
-                cursor_col = 0;
-                cursor_row += 1;
+                newline();
             }
         },
     }
@@ -271,6 +300,8 @@ Checkpoint:
 
 - The kernel can write several lines of text to the screen.
 - Serial logging still works independently.
+- This can be tested with a temporary `console.writeString(...)` call after
+  `console.init(info.framebuffer)`.
 
 ## Step 4: Add Wrapping And Scrolling
 
@@ -298,6 +329,28 @@ fn newline() void {
 }
 ```
 
+Update `putChar` so newline and wrapping go through `newline()`:
+
+File: `kernel/src/fb/console.zig`
+
+```zig
+pub fn putChar(ch: u8) void {
+    switch (ch) {
+        '\n' => newline(),
+        '\r' => cursor_col = 0,
+        '\t' => {
+            var i: usize = 0;
+            while (i < 4) : (i += 1) putChar(' ');
+        },
+        else => {
+            drawGlyph(cursor_col, cursor_row, ch, 0x00ffffff, 0x00000000);
+            cursor_col += 1;
+            if (cursor_col >= cols()) newline();
+        },
+    }
+}
+```
+
 Scrolling means copying framebuffer pixels upward by `font.height` pixel rows:
 
 File: `kernel/src/fb/console.zig`
@@ -320,6 +373,29 @@ fn scrollOneRow() void {
     }
 
     clearPixelRows(height - row_pixels, height);
+}
+```
+
+`clearPixelRows` fills a vertical range of framebuffer pixel rows with the
+background color. Scrolling needs it because after copying text upward, the last
+character row still contains duplicated old pixels.
+
+File: `kernel/src/fb/console.zig`
+
+```zig
+fn clearPixelRows(start_y: usize, end_y: usize) void {
+    const fb = framebuffer orelse return;
+    const pixels: [*]volatile u32 = @ptrCast(@alignCast(fb.address));
+    const pitch_pixels: usize = @intCast(fb.pitch / 4);
+    const width: usize = @intCast(fb.width);
+
+    var y = start_y;
+    while (y < end_y) : (y += 1) {
+        var x: usize = 0;
+        while (x < width) : (x += 1) {
+            pixels[y * pitch_pixels + x] = 0x00000000;
+        }
+    }
 }
 ```
 
@@ -360,6 +436,7 @@ Checkpoint:
 
 - Early logs before framebuffer console init still go to serial.
 - Later logs appear both on screen and in the QEMU terminal.
+- Temporary direct console calls from earlier steps can be removed.
 
 ## Step 6: Use Console In Panic Path
 

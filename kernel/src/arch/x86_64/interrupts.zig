@@ -1,5 +1,5 @@
-const klog = @import("../../klog.zig");
-const panic = @import("../../panic.zig").panic;
+const klog = @import("../../utils/klog.zig");
+const panic = @import("../../utils/panic.zig").panic;
 
 export fn isr_invalid_opcode() callconv(.naked) void {
   asm volatile (

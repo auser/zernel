@@ -1,6 +1,6 @@
 const boot_info = @import("../../boot/info.zig");
 const BootInfo = boot_info.BootInfo;
-const panic = @import("../../panic.zig").panic;
+const panic = @import("../../utils/panic.zig").panic;
 const pmm = @import("../../mem/pmm.zig");
 
 pub const page_size: usize = 4096;
