@@ -1,4 +1,5 @@
 pub const io = @import("x86_64/io.zig");
+pub const paging = @import("x86_64/paging.zig");
 pub const serial = @import("x86_64/serial.zig");
 
 pub fn initEarlyDebug() void {

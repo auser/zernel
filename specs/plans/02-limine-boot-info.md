@@ -40,6 +40,49 @@ assumptions spread through the kernel and become hard to validate.
 - Physical versus virtual addresses.
 - Why bootloader data should be copied or wrapped before broad kernel use.
 
+### What HHDM Is
+
+HHDM means higher-half direct map.
+
+It is a virtual address window where physical RAM is mapped at a fixed offset.
+Instead of treating a physical address as a pointer directly, the kernel adds
+Limine's HHDM offset and gets a virtual address it can dereference.
+
+Example:
+
+```text
+hhdm_offset = 0xffff800000000000
+physical    = 0x0000000000100000
+virtual     = 0xffff800000100000
+```
+
+The word "direct" means the mapping preserves the physical layout. Physical
+address `0x1000` appears at `hhdm_offset + 0x1000`, physical address `0x2000`
+appears at `hhdm_offset + 0x2000`, and so on.
+
+The word "higher-half" means the virtual addresses live high in the address
+space, away from low identity-mapped addresses and future user-space ranges.
+
+HHDM is useful because Zig pointers are virtual addresses. If the PMM returns a
+physical page frame such as `0x12345000`, kernel code cannot safely do this:
+
+```zig
+const ptr: *u8 = @ptrFromInt(0x12345000);
+```
+
+That number is a physical address. To access the same RAM through the direct
+map, use:
+
+```zig
+const virt = boot_info.physToHhdm(&info, 0x12345000);
+const ptr: *u8 = @ptrFromInt(virt);
+```
+
+HHDM does not make memory safe or allocatable by itself. It only gives the
+kernel a convenient virtual route to physical memory that Limine already mapped.
+The PMM still decides which physical frames are free, and page-table code still
+decides what additional mappings should exist.
+
 ## Function Map
 
 The boot-info path has three layers:
@@ -149,10 +192,10 @@ if (entry.kind == .usable) {
 Reserved, framebuffer, kernel/module, and bootloader ranges must not be handed
 out by a future physical memory allocator.
 
-### HHDM Translation
+### HHDM Translation Math
 
-HHDM means higher-half direct map. Limine maps physical memory into a virtual
-address window by adding one fixed offset:
+Limine maps physical memory into the HHDM virtual address window by adding one
+fixed offset:
 
 ```text
 hhdm_virtual = hhdm_offset + physical

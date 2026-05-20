@@ -6,6 +6,8 @@ const current = switch (builtin.cpu.arch) {
     else => @compileError("unsupported kernel architecture"),
 };
 
+pub const paging = current.paging;
+
 pub fn initEarlyDebug() void {
     current.initEarlyDebug();
 }

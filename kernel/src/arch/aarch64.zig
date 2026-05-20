@@ -1,3 +1,5 @@
+pub const paging = @import("aarch64/paging.zig");
+
 pub fn initEarlyDebug() void {}
 
 pub fn writeEarlyDebug(_: []const u8) void {}

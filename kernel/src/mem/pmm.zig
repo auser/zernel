@@ -14,7 +14,7 @@ pub fn init(info: *const boot_info.BootInfo) void {
     panic("no pmm bitmap storage");
 
   const bitmap_virt = boot_info.physToHhdm(info, bitmap_phys);
-  const bitmap: []const u8 = @as([*]u8, @ptrFromInt(bitmap_virt))[0..bytes];
+  const bitmap: []u8 = @as([*]u8, @ptrFromInt(bitmap_virt))[0..bytes];
 
   // Clear the memory
   @memset(bitmap, 0xff);
@@ -85,12 +85,12 @@ fn bitmapLocation(page_index: usize) struct { byte: usize, mask: u8 } {
   };
 }
 
-fn isUsed(bitmap: []const u8, page_index: u8) bool {
+fn isUsed(bitmap: []const u8, page_index: usize) bool {
   const loc = bitmapLocation(page_index);
   return (bitmap[loc.byte] & loc.mask) != 0;
 }
 
-fn setUsed(bitmap: []u8, page_index: u8, used: bool) void {
+fn setUsed(bitmap: []u8, page_index: usize, used: bool) void {
   const loc = bitmapLocation(page_index);
   if (used) {
     bitmap[loc.byte] |= loc.mask;
